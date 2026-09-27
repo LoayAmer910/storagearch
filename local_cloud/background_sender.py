@@ -122,11 +122,19 @@ class BackgroundSender:
         if needs_installation_auth and credentials is None:
             return "retry_later"  # no installation yet - not an error, just can't authenticate right now
 
-        queue.record_attempt(item.id)
-        if needs_installation_auth:
-            result, _request_id = cloud_client.post_signed(_PATHS[queue_name], body, credentials)
+        if queue_name == "telemetry":
+            with telemetry_queue.SEND_LOCK:
+                if not telemetry_queue.consent_given():
+                    queue.remove(item.id)  # opted out after this was queued - never send it
+                    return "sent_or_dropped"
+                queue.record_attempt(item.id)
+                result, _request_id = cloud_client.post_signed(_PATHS[queue_name], body, credentials)
         else:
-            result = cloud_client.post_unsigned(_PATHS[queue_name], body)
+            queue.record_attempt(item.id)
+            if needs_installation_auth:
+                result, _request_id = cloud_client.post_signed(_PATHS[queue_name], body, credentials)
+            else:
+                result = cloud_client.post_unsigned(_PATHS[queue_name], body)
 
         if result.ok:
             queue.remove(item.id)

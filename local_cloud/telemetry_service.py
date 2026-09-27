@@ -53,12 +53,16 @@ def set_consent(enabled, sender=None):
 
     config["telemetry_enabled"] = bool(enabled)
     config["telemetry_changed_at_utc"] = _utc_now_iso()
-    local_state.save_config(config)
 
     if was_enabled and not enabled:
+        # waits for a telemetry send already in flight; after this no queued event can be sent
+        with telemetry_queue.SEND_LOCK:
+            local_state.save_config(config)
+            telemetry_queue.open_queue().clear()
         _send_opt_out_best_effort()
-        telemetry_queue.open_queue().clear()
-    elif enabled and sender is not None:
+        return
+    local_state.save_config(config)
+    if enabled and sender is not None:
         try:
             sender.wake()
         except Exception:  # noqa: BLE001

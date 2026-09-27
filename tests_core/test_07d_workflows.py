@@ -99,11 +99,22 @@ def test_checkin_refuses_what_it_cannot_do(app):
     api.archive_file_result(src, "Docs")
     item_id = item_id_by_name("x.txt")
     assert not api.checkin(item_id)  # not checked out
-    ws = api.checkout(item_id)
-    os.remove(ws)
-    assert not api.checkin(item_id) and api.get_item(item_id)[10] == "CHECKED_OUT"
     assert not api.checkin(999999)
     assert api.checkout(999999) is None
+
+
+def test_a_deleted_checked_out_copy_returns_the_item_to_its_archived_version(app):
+    src = _file(app, "x.txt")
+    api.archive_file_result(src, "Docs")
+    item_id = item_id_by_name("x.txt")
+    archive_before = open(api.get_archive(api.get_item(item_id)[1])[3], "rb").read()
+    ws = api.checkout(item_id)
+    os.remove(ws)
+    assert api.checkin_result(item_id) == {"success": True, "reason": "WORKSPACE_COPY_MISSING"}
+    assert api.get_item(item_id)[10] == "ARCHIVED" and api.items_pending_return() == []
+    assert open(api.get_archive(api.get_item(item_id)[1])[3], "rb").read() == archive_before, "the archive was touched"
+    back = api.checkout(item_id)
+    assert open(back, "rb").read() == open(src, "rb").read()
 
 
 def test_duplicates_of_files_and_compressible_folders_are_recognized(app):

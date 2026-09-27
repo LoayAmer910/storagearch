@@ -367,15 +367,30 @@ class ItemsTab(QWidget):
 
         self.main_window.set_busy(True, "Checking in...")
         self._thread, self._worker = run_in_background(
-            self, main.checkin, self._on_checkin_done, self._on_action_failed, args=(item_id,)
+            self, main.checkin_result, self._on_checkin_done, self._on_action_failed, args=(item_id,)
         )
 
-    def _on_checkin_done(self, success):
+    def _on_checkin_done(self, result):
         self.main_window.set_busy(False)
-        if not success:
-            QMessageBox.warning(self, "Checkin", "Checkin failed. See the application log for details.")
+        if not result["success"]:
+            QMessageBox.warning(
+                self,
+                "Checkin",
+                "Checkin failed - the checked-out copy was left exactly as it is.\n"
+                "If it is open in another program, close it and try again.",
+            )
+            self.main_window.refresh_all()
             return
-        QMessageBox.information(self, "Checkin", "Item checked in and verified successfully.")
+        if result["reason"] == "WORKSPACE_COPY_MISSING":
+            QMessageBox.warning(
+                self,
+                "Checkin",
+                "The checked-out copy was not found - it was probably deleted.\n"
+                "The item was returned to the version saved in the archive. "
+                "Changes made to the missing copy were not saved.",
+            )
+        else:
+            QMessageBox.information(self, "Checkin", "Item checked in and verified successfully.")
         self.main_window.refresh_all()
 
     def _verify_selected(self):

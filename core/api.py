@@ -38,7 +38,7 @@ _catalog_lock = threading.Lock()
 __all__ = [
     "initialize", "create_category", "update_category", "delete_category", "get_category", "list_categories",
     "list_archives", "get_item", "get_archive", "search", "find_duplicate", "dashboard_summary",
-    "archive_file", "archive_file_result", "archive_folder", "archive_folder_result", "checkout", "checkin",
+    "archive_file", "archive_file_result", "archive_folder", "archive_folder_result", "checkout", "checkin", "checkin_result",
     "items_pending_return", "handle_pending_checkouts_on_exit", "verify_archive_by_id", "verify_category",
     "verify_all", "is_protected_path", "get_storage_locations", "set_storage_location", "reset_workspace_location",
     "calculate_file_hash", "calculate_folder_hash", "validate_source_path", "data_root", "shutdown_cloud",
@@ -245,10 +245,11 @@ def set_storage_location(data_root=None, workspace_root=None):
     if data_root is not None and paths.is_protected(data_root):
         return False
     previous = config.current()
-    config.save(data_root=data_root, workspace_root=workspace_root)
     try:
+        config.save(data_root=data_root, workspace_root=workspace_root)
         initialize()
-    except LegacyDatabaseError:
+    except (LegacyDatabaseError, OSError, sqlite3.Error) as exc:  # a location the app cannot use: keep the old one
+        log.warning("cannot switch the storage location: %s", exc)
         config.save(data_root=previous["data_root"], workspace_root=previous["workspace_root"] or "")
         initialize()
         return False
@@ -604,6 +605,12 @@ def _checkout(item_id, destination):
 
 
 def checkin(item_id, remove_workspace_copy=True):
+    return checkin_result(item_id, remove_workspace_copy)["success"]
+
+
+def checkin_result(item_id, remove_workspace_copy=True):
+    """Like checkin, with the reason: {"success", "reason"}. A success can carry a reason too -
+    WORKSPACE_COPY_MISSING means the checked-out copy was gone and the item went back to its archived version."""
     start = time.perf_counter()
     try:
         ok, reason, stats = _checkin(item_id, remove_workspace_copy)
@@ -611,10 +618,11 @@ def checkin(item_id, remove_workspace_copy=True):
         log.exception("checkin of item %s failed", item_id)
         ok, reason, stats = False, type(exc).__name__, None
     event = {"event_type": "checkin_completed" if ok else "checkin_failed", "operation_type": "checkin",
-             "result": "success" if ok else "failure", "duration_ms": _ms(start), "error_category": reason, "file_count": 1,
+             "result": "success" if ok else "failure", "duration_ms": _ms(start),
+             "error_category": None if ok else reason, "file_count": 1,
              "original_bytes_total": (stats or {}).get("original"), "stored_bytes_total": (stats or {}).get("stored")}
     events.report_operation(event)
-    return ok
+    return {"success": ok, "reason": reason}
 
 
 def _checkin(item_id, remove_workspace_copy):
@@ -626,7 +634,10 @@ def _checkin(item_id, remove_workspace_copy):
         return False, "NOT_CHECKED_OUT", None
     workspace = item[11]
     if not workspace or not os.path.exists(workspace):
-        return False, "WORKSPACE_COPY_MISSING", None
+        # the checked-out copy is gone (deleted by the user): the archived version is untouched, so the item goes
+        # back to it - otherwise it could neither be checked in nor checked out again. The caller tells the user.
+        cat.set_item_status(item_id, "ARCHIVED")
+        return True, "WORKSPACE_COPY_MISSING", None
     is_folder = item[2] == "folder"
     if is_folder:
         entries, skipped = folders.scan(workspace)
