@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+dist/
+build/
+# data the app creates where it is started
+SmartArchiveData/
+storagearch_config.json
+# optional JPEG XL tools (not shipped)
+tools/
