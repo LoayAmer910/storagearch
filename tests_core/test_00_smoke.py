@@ -81,6 +81,38 @@ def test_the_import_check_sees_every_import_form(tmp_path):
     assert "sibling" not in roots and "" not in roots
 
 
+def test_every_third_party_import_is_declared_in_requirements():
+    """A package that is only installed on the developer's machine (cryptography once was) silently disables
+    the cloud client on a clean install - the app catches the import error on purpose."""
+    import importlib.metadata as metadata
+    import re
+
+    with open(os.path.join(REPO_ROOT, "requirements.txt"), encoding="utf-8") as f:
+        declared = {re.split(r"[<>=!~;\[ ]", line.strip())[0].lower() for line in f
+                    if line.strip() and not line.startswith("#")}
+    distributions = metadata.packages_distributions()
+    local = {"core", "gui", "local_cloud", "app"}
+    missing = []
+    for folder in ("core", "gui", "local_cloud"):
+        for root_dir, _dirs, files in os.walk(os.path.join(REPO_ROOT, folder)):
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                path = os.path.join(root_dir, name)
+                for root, line in _imported_roots(path):
+                    if root in sys.stdlib_module_names or root in local:
+                        continue
+                    dists = {d.lower() for d in distributions.get(root, [root])}
+                    if not dists & declared:
+                        missing.append(f"{os.path.relpath(path, REPO_ROOT)}:{line} imports {root}")
+    assert missing == [], missing
+
+
+def test_the_cloud_client_imports():
+    from core import events
+    assert events.connect(), "local_cloud must be importable (is a dependency missing?)"
+
+
 def test_importing_every_core_module_loads_nothing_from_the_old_engine():
     before = set(sys.modules)
     for name in _core_modules():
