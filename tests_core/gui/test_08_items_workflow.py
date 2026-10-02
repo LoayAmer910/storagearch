@@ -255,6 +255,7 @@ def test_checkin_modified_folder_preserves_unrelated_members(gui_window, qtbot, 
     workspace_folder = workspace_of("proj")
     with open(os.path.join(workspace_folder, "a.txt"), "a", encoding="utf-8") as f:
         f.write("-edited")
+    before = {m["relative_path"]: m["path_in_archive"] for m in main._cat().members_of_item(main.search("proj")[0][0])}
 
     gui_window.items_tab.refresh()
     _select_row_by_name(gui_window.items_tab.table, "proj")
@@ -263,12 +264,13 @@ def test_checkin_modified_folder_preserves_unrelated_members(gui_window, qtbot, 
 
     items = main.search("proj")
     zip_path = items[0][10]
-    # path_in_archive for the folder root is now SHA-256-prefixed (e.g. "abcd1234_proj/");
-    # nested members keep their relative path under that same prefixed root.
-    folder_root = items[0][3]
+    # the edited file is written again; the unchanged one stays the very member it was before the checkin
+    after = {m["relative_path"]: m["path_in_archive"] for m in main._cat().members_of_item(items[0][0])}
+    assert after["proj/a.txt"] != before["proj/a.txt"]
+    assert after["proj/b.txt"] == before["proj/b.txt"]
     with zipfile.ZipFile(zip_path) as zf:
-        assert zf.read(f"{folder_root}a.txt").decode("utf-8") == "a-content-edited"
-        assert zf.read(f"{folder_root}b.txt").decode("utf-8") == "b-content"  # unrelated member untouched
+        assert zf.read(after["proj/a.txt"]).decode("utf-8") == "a-content-edited"
+        assert zf.read(after["proj/b.txt"]).decode("utf-8") == "b-content"  # unrelated member untouched
 
 
 def test_checkin_without_being_checked_out_is_rejected(gui_window, qtbot, monkeypatch, make_file, message_boxes):

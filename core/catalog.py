@@ -292,17 +292,26 @@ class Catalog:
             self._refresh_archive(db, archive_id)
             return item_id
 
-    def replace_item_content(self, item_id, item, members, new_archive_id=None):
+    def replace_item_content(self, item_id, item, members, new_archive_id=None, kept=()):
         """Checkin of changed content: the old members become dead (their bytes stay in the ZIP until it is
         compacted), the new ones are added - in `new_archive_id` when the item moves to another archive (its
-        old one is sealed or full) - and the item row is updated, all in one transaction."""
+        old one is sealed or full) - and the item row is updated, all in one transaction. `kept` names
+        (path_in_archive) old members whose content did not change: they stay live as part of the new
+        content - only possible while the item stays in its archive."""
+        kept = set(kept)
         with self.transaction() as db:
             old_archive_id = db.execute("SELECT archive_id FROM items WHERE id = ?", (item_id,)).fetchone()[0]
             archive_id = new_archive_id or old_archive_id
-            dead = db.execute("SELECT COALESCE(SUM(stored_size), 0) FROM members WHERE item_id = ? AND live = 1",
-                              (item_id,)).fetchone()[0]
-            db.execute("UPDATE members SET live = 0 WHERE item_id = ?", (item_id,))
-            db.execute("UPDATE archives SET dead_bytes = dead_bytes + ? WHERE id = ?", (dead, old_archive_id))
+            if kept and archive_id != old_archive_id:
+                raise ValueError("kept members cannot move to another archive")
+            old = db.execute("SELECT id, path_in_archive, stored_size FROM members WHERE item_id = ? AND live = 1",
+                             (item_id,)).fetchall()
+            if not kept <= {path for _id, path, _size in old}:
+                raise ValueError("a kept member is not a live member of this item")
+            gone = [(member_id, size) for member_id, path, size in old if path not in kept]
+            db.executemany("UPDATE members SET live = 0 WHERE id = ?", [(member_id,) for member_id, _size in gone])
+            db.execute("UPDATE archives SET dead_bytes = dead_bytes + ? WHERE id = ?",
+                       (sum(size for _id, size in gone), old_archive_id))
             db.execute(
                 "UPDATE items SET archive_id = ?, path_in_archive = ?, original_size = ?, compressed_size = ?, "
                 "original_hash = ?, archive_hash = ?, strategy = ?, status = 'ARCHIVED', workspace_path = NULL, "

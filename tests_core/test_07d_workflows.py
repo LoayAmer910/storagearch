@@ -4,6 +4,7 @@ out of a sealed archive, compaction, source actions, links, bad input, crash rec
 import concurrent.futures
 import json
 import os
+import shutil
 import subprocess
 import zipfile
 
@@ -70,6 +71,151 @@ def test_checkout_edit_checkin_of_a_folder_with_added_removed_and_empty_entries(
         f.write(b"changed\n")
     expected = tree(ws)
     assert api.checkin(item_id)
+    assert tree(api.checkout(item_id, destination=str(app / "back"))) == expected
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+
+
+def _written_files(monkeypatch):
+    """Records the relative path of every file member any write puts into an archive."""
+    from core import store
+    written, real = [], store.write_members
+
+    def spy(zip_path, planned):
+        written.extend(m.relative_path for m in planned if m.kind == "file")
+        return real(zip_path, planned)
+    monkeypatch.setattr(store, "write_members", spy)
+    return written
+
+
+def _folder_of(app, name, count=8):
+    folder = app / name
+    for i in range(count):
+        _file(folder, f"sub{i % 3}/f{i}.txt", 2000, seed=i)
+    os.makedirs(folder / "empty")
+    return folder
+
+
+def test_a_folder_checkin_writes_only_the_files_that_changed(app, monkeypatch):
+    folder = _folder_of(app, "proj")
+    assert api.archive_folder_result(str(folder), "Docs")["success"]
+    item_id = item_id_by_name("proj", "folder")
+    archive_id = api.get_item(item_id)[1]
+    old = {m["relative_path"]: m for m in api._cat().members_of_item(item_id)}
+    ws = api.checkout(item_id)
+    with open(os.path.join(ws, "sub1", "f4.txt"), "ab") as f:
+        f.write(b"changed\n")
+    _file(ws, "added.txt", seed=99)
+    os.remove(os.path.join(ws, "sub2", "f5.txt"))
+    expected = tree(ws)
+    sizes = sum(os.path.getsize(os.path.join(d, n)) for d, _s, files in os.walk(ws) for n in files)
+    written = _written_files(monkeypatch)
+    assert api.checkin(item_id)
+    assert sorted(written) == ["proj/added.txt", "proj/sub1/f4.txt"]
+    assert api._cat().archive_state(archive_id)["dead_bytes"] == (
+        old["proj/sub1/f4.txt"]["stored_size"] + old["proj/sub2/f5.txt"]["stored_size"])  # only these became dead
+    item, members = api.get_item(item_id), api._cat().members_of_item(item_id)
+    assert item[6] == sizes == sum(m["original_size"] for m in members)
+    assert item[7] == sum(m["stored_size"] for m in members)
+    assert tree(api.checkout(item_id, destination=str(app / "back"))) == expected
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+
+
+def test_a_file_changed_and_changed_back_is_written_again(app, monkeypatch):
+    folder = _folder_of(app, "proj")
+    api.archive_folder_result(str(folder), "Docs")
+    item_id = item_id_by_name("proj", "folder")
+    ws = api.checkout(item_id)
+    with open(os.path.join(ws, "sub0", "f0.txt"), "ab") as f:
+        f.write(b"first edit\n")
+    assert api.checkin(item_id)
+    ws = api.checkout(item_id)
+    with open(os.path.join(ws, "sub0", "f0.txt"), "wb") as f:
+        f.write(read(folder / "sub0" / "f0.txt"))  # back to the original - which differs from the checked-in edit
+    with open(os.path.join(ws, "sub1", "f1.txt"), "ab") as f:
+        f.write(b"other edit\n")
+    expected = tree(ws)
+    written = _written_files(monkeypatch)
+    assert api.checkin(item_id)
+    assert sorted(written) == ["proj/sub0/f0.txt", "proj/sub1/f1.txt"]
+    assert tree(api.checkout(item_id, destination=str(app / "back"))) == expected
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+
+
+def test_a_folder_checkin_that_only_removes_entries_writes_nothing(app, monkeypatch):
+    folder = _folder_of(app, "proj")
+    api.archive_folder_result(str(folder), "Docs")
+    item_id = item_id_by_name("proj", "folder")
+    ws = api.checkout(item_id)
+    os.remove(os.path.join(ws, "sub0", "f3.txt"))
+    shutil.rmtree(os.path.join(ws, "empty"))
+    expected = tree(ws)
+    written = _written_files(monkeypatch)
+    assert api.checkin(item_id)
+    assert written == []
+    back = api.checkout(item_id, destination=str(app / "back"))
+    assert tree(back) == expected and not os.path.exists(os.path.join(back, "empty"))
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+
+
+def test_a_folder_moving_out_of_a_sealed_archive_takes_every_file_along(app, monkeypatch):
+    api.create_category("Small", max_archive_size=60_000)
+    folder = _folder_of(app, "proj", count=4)
+    assert api.archive_folder_result(str(folder), "Small")["success"]
+    item_id = item_id_by_name("proj", "folder")
+    for i in range(20):  # fill the archive until it is sealed
+        if api._cat().archive_state(api.get_item(item_id)[1])["state"] == "sealed":
+            break
+        api.archive_file_result(_file(app, f"filler{i}.txt", 3000, seed=50 + i), "Small")
+    assert api._cat().archive_state(api.get_item(item_id)[1])["state"] == "sealed"
+    sealed_path = api.get_archive(api.get_item(item_id)[1])[3]
+    sealed_bytes = read(sealed_path)
+    ws = api.checkout(item_id)
+    with open(os.path.join(ws, "sub0", "f0.txt"), "ab") as f:
+        f.write(b"edit\n")
+    expected = tree(ws)
+    written = _written_files(monkeypatch)
+    assert api.checkin(item_id)
+    assert len(written) == 4 and read(sealed_path) == sealed_bytes
+    assert api.get_archive(api.get_item(item_id)[1])[3] != sealed_path
+    assert tree(api.checkout(item_id, destination=str(app / "back"))) == expected
+    assert set(api.verify_category("Small").values()) == {"VERIFIED"}
+
+
+def test_a_folder_that_outgrows_its_open_archive_takes_every_file_along(app, monkeypatch):
+    api.create_category("Small", max_archive_size=200_000)
+    folder = _folder_of(app, "proj", count=4)
+    assert api.archive_folder_result(str(folder), "Small")["success"]
+    item_id = item_id_by_name("proj", "folder")
+    old_archive = api.get_item(item_id)[1]
+    assert api._cat().archive_state(old_archive)["state"] == "open"
+    ws = api.checkout(item_id)
+    with open(os.path.join(ws, "big.bin"), "wb") as f:
+        f.write(os.urandom(190_000))  # does not fit in what is left of the open archive
+    expected = tree(ws)
+    written = _written_files(monkeypatch)
+    assert api.checkin(item_id)
+    assert api.get_item(item_id)[1] != old_archive
+    assert len(written) == 5  # the unchanged files moved along with the new one
+    assert tree(api.checkout(item_id, destination=str(app / "back"))) == expected
+    assert set(api.verify_category("Small").values()) == {"VERIFIED"}
+
+
+def test_kept_files_survive_many_edits_and_compaction(app):
+    folder = _folder_of(app, "proj", count=6)
+    _file(folder, "big.txt", 30000, seed=77)
+    api.archive_folder_result(str(folder), "Docs")
+    item_id = item_id_by_name("proj", "folder")
+    zip_path = api.list_archives()[0][3]
+    for i in range(6):
+        ws = api.checkout(item_id)
+        with open(os.path.join(ws, "big.txt"), "ab") as f:
+            f.write(f"edit {i}\n".encode())
+        expected = tree(ws)
+        assert api.checkin(item_id)
+    with zipfile.ZipFile(zip_path) as z:
+        names = z.namelist()
+    assert len([n for n in names if n.endswith("big.txt") or n.endswith("big.txt.sa")]) <= 3, "never reclaimed"
+    assert len([n for n in names if n.endswith("f0.txt") or n.endswith("f0.txt.sa")]) == 1  # kept, never rewritten
     assert tree(api.checkout(item_id, destination=str(app / "back"))) == expected
     assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
 

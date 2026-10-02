@@ -501,9 +501,13 @@ def _folder_digest(entries, scanned):
     return folders.digest((e.rel_path, e.kind, scanned[e][0].sha256 if e.kind == "file" else EMPTY_DIGEST) for e in entries)
 
 
-def _folder_plan(uid_prefix, root_name, entries, decisions):
-    planned = [PlannedMember(f"{uid_prefix}/{root_name}/", root_name, "dir", "stored")]
+def _folder_plan(uid_prefix, root_name, entries, decisions, kept=None):
+    """The members to write for a folder - all of them, or (at checkin) those not `kept` from its old version."""
+    kept = kept or {}
+    planned = [] if None in kept else [PlannedMember(f"{uid_prefix}/{root_name}/", root_name, "dir", "stored")]
     for e in entries:
+        if e in kept:
+            continue
         member = f"{uid_prefix}/{root_name}/{e.rel_path}"
         relative = f"{root_name}/{e.rel_path}"
         if e.kind == "dir":
@@ -511,6 +515,24 @@ def _folder_plan(uid_prefix, root_name, entries, decisions):
         else:
             planned.append(_planned_from_decision(decisions[e], e.full_path, member, relative))
     return planned
+
+
+def _unchanged_members(old_members, root_name, entries, scanned):
+    """The old members a checked-in folder can keep as they are - same relative path, same kind and, for a
+    file, the same SHA-256 and size - keyed by entry (None for the folder itself). Their stored bytes are
+    already in the archive, chosen for exactly this content, so they are neither compressed nor written again."""
+    by_relative = {m["relative_path"]: m for m in old_members}
+    kept = {}
+    root = by_relative.get(root_name)
+    if root is not None and root["kind"] == "dir":
+        kept[None] = root
+    for e in entries:
+        old = by_relative.get(f"{root_name}/{e.rel_path}")
+        if old is None or old["kind"] != e.kind:
+            continue
+        if e.kind == "dir" or (old["original_sha256"] == scanned[e][0].sha256 and old["original_size"] == scanned[e][0].size):
+            kept[e] = old
+    return kept
 
 
 def _records_digest(records):
@@ -660,9 +682,12 @@ def _checkin(item_id, remove_workspace_copy):
     old_archive_id = item[1]
     uid = f"{cat.item_uid(item_id)}.{Catalog.new_uid()[:6]}"
     root_name = paths.bare_name(os.path.basename(os.path.normpath(workspace)), fallback="folder" if is_folder else "item")
+    kept = {}
     with OperationScope("checkin", temp_root=config.temp_dir()) as scope:
         if is_folder:
-            decisions = _decide_many(scope, scanned)
+            if cat.archive_state(old_archive_id)["state"] == "open":
+                kept = _unchanged_members(cat.members_of_item(item_id), root_name, entries, scanned)
+            decisions = _decide_many(scope, {e: s for e, s in scanned.items() if e not in kept})
             stored_total = sum(d.stored_size for d in decisions.values())
         else:
             decision = _new_pipeline(scope).decide(workspace, scanned_file)
@@ -671,19 +696,29 @@ def _checkin(item_id, remove_workspace_copy):
             return False, "INSUFFICIENT_SPACE", None
         with _write_lock:
             archive_id, zip_path = _checkin_archive(old_archive_id, category, stored_total)
+            if kept and archive_id != old_archive_id:
+                # the item moves to another archive (its own filled up): unchanged files are written there too
+                rest = _decide_many(scope, {e: scanned[e] for e in kept if e is not None and e.kind == "file"})
+                if not _enough_space(sum(d.stored_size for d in rest.values())):
+                    return False, "INSUFFICIENT_SPACE", None
+                decisions.update(rest)
+                kept = {}
             if is_folder:
-                planned = _folder_plan(uid, root_name, entries, decisions)
-                original = sum(d.info.size for d in decisions.values())
+                planned = _folder_plan(uid, root_name, entries, decisions, kept)
+                original = sum(d.info.size for d in decisions.values()) + sum(
+                    m["original_size"] for m in kept.values() if m["kind"] == "file")
             else:
                 planned = [_planned_from_decision(decision, workspace, f"{uid}/{root_name}", root_name)]
                 original = decision.info.size
             records = store.write_members(zip_path, planned)
-            stored = sum(r["stored_size"] for r in records)
+            content = [*kept.values(), *records]
+            stored = sum(r["stored_size"] for r in content)
             new_item = {"path_in_archive": f"{uid}/{root_name}" + ("/" if is_folder else ""), "original_size": original,
                         "compressed_size": stored, "original_hash": new_hash,
-                        "archive_hash": _records_digest(records) if is_folder else records[0]["stored_sha256"],
+                        "archive_hash": _records_digest(content) if is_folder else records[0]["stored_sha256"],
                         "strategy": None if is_folder or not decision.smart else decision.method}
-            cat.replace_item_content(item_id, new_item, records, new_archive_id=archive_id)
+            cat.replace_item_content(item_id, new_item, records, new_archive_id=archive_id,
+                                     kept=[m["path_in_archive"] for m in kept.values()])
             _after_write(archive_id, zip_path, category)
             if archive_id != old_archive_id:
                 _refresh_old_archive(old_archive_id, category)
