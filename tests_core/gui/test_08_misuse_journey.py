@@ -174,10 +174,36 @@ def test_a_file_another_program_holds_open(gui_window, qtbot, monkeypatch, messa
     doc.write_bytes(corpus.lines(2000, "{i} {w}\n"))
     with locked(doc):
         _archive_file_through_gui(gui_window, qtbot, monkeypatch, str(doc), "Docs")
-        assert _last(message_boxes)[0] == "warning", message_boxes.calls
+        kind, _title, text = _last(message_boxes)
+        assert kind == "warning" and "open_in_word.docx" in text and "פתוח בתוכנה אחרת" in text, message_boxes.calls
     assert api.search("") == []
     _archive_file_through_gui(gui_window, qtbot, monkeypatch, str(doc), "Docs")  # closed it, tries again
     assert "archived and verified" in _last(message_boxes)[2]
+    _healthy(gui_window, message_boxes)
+
+
+def test_a_file_that_gets_locked_after_the_duplicate_check(gui_window, qtbot, monkeypatch, message_boxes, sandbox):
+    api.create_category("Docs")
+    doc = sandbox / "report.xlsx"
+    doc.write_bytes(corpus.lines(2000, "{i} {w}\n"))
+    handles = []
+
+    class LocksWhileAsked(FakeSourceActionDialog):
+        def exec(self):
+            handles.append(_kernel32.CreateFileW(str(doc), 0x80000000, 0, None, 3, 0x80, None))
+            return self.Accepted
+    monkeypatch.setattr("gui.items_tab.SourceActionDialog", LocksWhileAsked)
+    gui_window.items_tab.refresh_categories()
+    monkeypatch.setattr("gui.items_tab.QFileDialog.getOpenFileName", staticmethod(lambda *a, **k: (str(doc), "")))
+    try:
+        gui_window.items_tab._add_file()
+        wait_idle(qtbot, gui_window)
+    finally:
+        for h in handles:
+            _kernel32.CloseHandle(h)
+    kind, _title, text = _last(message_boxes)
+    assert kind == "warning" and "report.xlsx" in text and "פתוח בתוכנה אחרת" in text, message_boxes.calls
+    assert api.search("") == []
     _healthy(gui_window, message_boxes)
 
 
@@ -189,7 +215,9 @@ def test_a_folder_with_one_file_held_open(gui_window, qtbot, monkeypatch, messag
     (project / "busy.log").write_bytes(corpus.lines(900, "{i}\n"))
     with locked(project / "busy.log"):
         _archive_folder_through_gui(gui_window, qtbot, monkeypatch, str(project), "Docs")
-        assert _last(message_boxes)[0] == "warning", message_boxes.calls
+        kind, _title, text = _last(message_boxes)
+        assert kind == "warning" and "busy.log" in text and "פתוח בתוכנה אחרת" in text, message_boxes.calls
+        assert "שם תיקייה לא חוקי" not in text
     assert api.search("") == [], "a folder must never be stored with a file silently missing"
     _healthy(gui_window, message_boxes)
 
@@ -545,3 +573,22 @@ def test_searching_for_strange_text(gui_window, qtbot, monkeypatch, message_boxe
     if text == "%":
         assert shown == ["100% done_[final].txt"]
     assert len(api.search("")) == 1
+
+
+def test_a_disconnect_that_could_not_finish_is_reported_not_hidden(gui_window, message_boxes, monkeypatch):
+    from gui.settings_tab import DISCONNECT_FAILED_MESSAGE
+    tab = gui_window.settings_tab
+    monkeypatch.setattr(api, "cloud_disconnect", lambda: False)
+    message_boxes.warning_confirm = True
+    tab._disconnect_cloud()
+    assert message_boxes.calls[-1] == ("warning", "Disconnect", DISCONNECT_FAILED_MESSAGE)
+    assert "תוכנה אחרת" in DISCONNECT_FAILED_MESSAGE and "נסה שוב" in DISCONNECT_FAILED_MESSAGE
+
+
+def test_a_disconnect_that_finished_shows_no_warning(gui_window, message_boxes, monkeypatch):
+    tab = gui_window.settings_tab
+    monkeypatch.setattr(api, "cloud_disconnect", lambda: True)
+    message_boxes.warning_confirm = True
+    tab._disconnect_cloud()
+    assert [c for c in message_boxes.calls if c[0] == "warning"] == [
+        ("warning", "Disconnect", "This clears the local Cloud connection and turns Telemetry off. Continue?")]

@@ -19,7 +19,7 @@ from core import catalog as catalog_module
 from core import config, events, folders, paths, router, store
 from core.catalog import EMPTY_DIGEST, Catalog, LegacyDatabaseError
 from core.executor import Executor
-from core.paths import CloudPlaceholderError, ExtractionRefused, InvalidPathError
+from core.paths import CloudPlaceholderError, ExtractionRefused, InvalidPathError, SourceInUseError
 from core.pipeline import Pipeline, scan as scan_file
 from core.scope import OperationScope, sweep_stale
 from core.store import PlannedMember
@@ -42,7 +42,7 @@ __all__ = [
     "items_pending_return", "handle_pending_checkouts_on_exit", "verify_archive_by_id", "verify_category",
     "verify_all", "is_protected_path", "get_storage_locations", "set_storage_location", "reset_workspace_location",
     "calculate_file_hash", "calculate_folder_hash", "validate_source_path", "data_root", "shutdown_cloud",
-    "CloudPlaceholderError", "InvalidPathError", "LegacyDatabaseError",
+    "CloudPlaceholderError", "InvalidPathError", "SourceInUseError", "LegacyDatabaseError",
     "cloud_available", "cloud_is_registered", "cloud_register", "cloud_disconnect", "cloud_telemetry_enabled",
     "cloud_set_telemetry_enabled", "cloud_submit_feedback", "cloud_check_for_updates", "cloud_report_crash",
 ]
@@ -230,6 +230,8 @@ def _read_error(path, exc):
     if paths.is_cloud_placeholder(path):
         return CloudPlaceholderError(f"'{path}' is a OneDrive/cloud file that has not been downloaded to this device")
     ok, reason = paths.validate_source_path(path)
+    if ok and isinstance(exc, PermissionError):  # locked by another program (sharing violation) or no read access
+        return SourceInUseError(path, exc.strerror or exc)
     return InvalidPathError(f"Cannot read '{path}': {reason if not ok else (exc.strerror or exc)}")
 
 
@@ -283,6 +285,8 @@ def _guarded_operation(fn, *args):
         return _fail("DATABASE_ERROR", "A database error occurred while archiving")
     except PermissionError:
         return _fail("PERMISSION_ERROR", "Permission denied while archiving")
+    except SourceInUseError as exc:
+        return dict(_fail("SOURCE_IN_USE", str(exc)), path=exc.path)
     except InvalidPathError as exc:
         return _fail("INVALID_PATH", str(exc))
     except OSError as exc:

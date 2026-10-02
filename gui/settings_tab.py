@@ -18,6 +18,9 @@ from core import api as main
 from gui.dialogs import BetaCodeDialog
 from gui.format_utils import ARCHIVE_SIZE_PRESETS
 
+DISCONNECT_FAILED_MESSAGE = ("ההתנתקות לא הושלמה – תוכנה אחרת (כמו אנטי-וירוס או גיבוי) משתמשת כרגע בנתוני החיבור.\n"
+                             "נסה שוב בעוד רגע.")
+
 
 class SettingsTab(QWidget):
     """
@@ -178,7 +181,8 @@ class SettingsTab(QWidget):
         if confirmation != QMessageBox.Yes:
             return
         main.cloud_set_telemetry_enabled(False)
-        main.cloud_disconnect()
+        if not main.cloud_disconnect():
+            QMessageBox.warning(self, "Disconnect", DISCONNECT_FAILED_MESSAGE)
         self._refresh_cloud_status()
 
     def _send_feedback(self):

@@ -6,8 +6,11 @@ without names or paths; a server that fails, hangs, answers garbage or rejects t
 changes or delays a local result; opting out empties the queue; disconnecting stops everything; an
 unsigned remote config or release is ignored; the dashboard's old strategy names still disable the new
 strategies."""
+import ctypes
 import os
+import threading
 import time
+from ctypes import wintypes
 
 import pytest
 
@@ -150,6 +153,57 @@ def test_disconnecting_stops_everything(cloud_app, worker):
     events.flush(5)
     time.sleep(1)
     assert [r for r in worker.requests[before:] if r["path"] == TELEMETRY] == []
+
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.CreateFileW.restype = wintypes.HANDLE
+_kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                  wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+
+
+def _hold(path):
+    """Opens the file with no sharing, the way a scanner or the app's own sender holding it would."""
+    deadline = time.monotonic() + 5
+    while True:  # the background sender may be reading it this very moment - the race this guards against
+        handle = _kernel32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)  # GENERIC_READ, share 0
+        if handle not in (None, wintypes.HANDLE(-1).value):
+            return handle
+        error = ctypes.get_last_error()
+        assert error == 32 and time.monotonic() < deadline, error
+        time.sleep(0.01)
+
+
+def test_a_disconnect_while_the_credentials_are_briefly_held_still_completes(cloud_app, worker):
+    from local_cloud import local_state
+    assert api.cloud_register("VALID-CODE")[0]
+    handle = _hold(local_state.credentials_path())
+    threading.Timer(0.3, _kernel32.CloseHandle, (handle,)).start()
+    assert api.cloud_disconnect() is True
+    assert not api.cloud_is_registered()
+    assert local_state.load_config()["installation_id"] is None
+
+
+def test_a_disconnect_that_cannot_remove_the_credentials_says_so_and_changes_nothing(cloud_app, worker, monkeypatch):
+    from local_cloud import dpapi_store, local_state
+    monkeypatch.setattr(dpapi_store, "DELETE_RETRY_SECONDS", 0.3)
+    assert api.cloud_register("VALID-CODE")[0]
+    installation_id = local_state.load_config()["installation_id"]
+    handle = _hold(local_state.credentials_path())
+    try:
+        assert api.cloud_disconnect() is False
+    finally:
+        _kernel32.CloseHandle(handle)
+    assert api.cloud_is_registered()  # still connected, whole - not half-disconnected
+    assert local_state.load_config()["installation_id"] == installation_id
+    assert api.cloud_disconnect() is True  # once released, trying again works
+    assert not api.cloud_is_registered()
+
+
+def test_disconnecting_twice_is_harmless(cloud_app, worker):
+    assert api.cloud_register("VALID-CODE")[0]
+    assert api.cloud_disconnect() is True
+    assert api.cloud_disconnect() is True
+    assert not api.cloud_is_registered()
 
 
 @pytest.mark.parametrize("args", [

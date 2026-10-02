@@ -74,8 +74,12 @@ def disconnect():
     installation's own still-valid signature to authorize deleting its own
     data server-side - a distinct, larger feature not in this phase's scope;
     disconnecting locally is always safe and always possible even fully
-    offline)."""
-    dpapi_store.delete_credentials()
+    offline). Returns False - and changes nothing - if the stored credentials cannot be removed."""
+    try:
+        dpapi_store.delete_credentials()
+    except OSError:
+        return False
     config = local_state.load_config()
     config["installation_id"] = None
     local_state.save_config(config)
+    return True

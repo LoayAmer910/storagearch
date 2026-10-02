@@ -204,7 +204,8 @@ def cloud_register(beta_code):
 
 
 def cloud_disconnect():
-    _guarded(None, lambda: _installation.disconnect())
+    """True once the local connection is gone; False if it could not be removed (it is then left whole)."""
+    return bool(_guarded(False, lambda: _installation.disconnect()))
 
 
 def cloud_telemetry_enabled():

@@ -27,6 +27,14 @@ class CloudPlaceholderError(InvalidPathError):
     """A cloud (Files On-Demand) placeholder that is not downloaded to this device."""
 
 
+class SourceInUseError(InvalidPathError):
+    """A source file that another program holds open, or that this user may not read. `path` names it."""
+
+    def __init__(self, path, detail):
+        super().__init__(f"Cannot read '{path}': {detail}")
+        self.path = path
+
+
 # --- names ---------------------------------------------------------------------------------------------
 
 def name_problem(component):

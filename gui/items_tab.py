@@ -27,6 +27,11 @@ COLUMNS = ("Name", "Type", "Category", "Archive", "Original size", "Compressed s
 ITEM_ID_ROLE = Qt.UserRole
 
 
+def _in_use_message(path):
+    return (f"הקובץ '{os.path.basename(path)}' פתוח בתוכנה אחרת או שאין הרשאה לקרוא אותו.\n"
+            f"סגור אותו ונסה שוב.\n\n{path}")
+
+
 class ItemsTab(QWidget):
     """8.3 / 8.4 - חיפוש, ארכוב, שליפה, החזרה ובדיקת תקינות ברמת פריט."""
 
@@ -227,8 +232,10 @@ class ItemsTab(QWidget):
                              "יש להוריד אותו (קליק ימני על הקובץ ב-OneDrive → \"תמיד שמור במכשיר זה\") ולנסות שוב.\n\n"
                              f"{exc}"
                 }
-            except archive_manager.InvalidPathError:
-                return {"error": "שם תיקייה לא חוקי או נתיב לא קיים"}
+            except archive_manager.SourceInUseError as exc:
+                return {"error": _in_use_message(exc.path)}
+            except archive_manager.InvalidPathError as exc:
+                return {"error": f"לא ניתן לקרוא את המקור:\n{exc}"}
             except OSError as exc:
                 return {"error": f"Unable to read source content: {exc}"}
             if content_hash is None:
@@ -286,7 +293,8 @@ class ItemsTab(QWidget):
         self._pending_archive = None
 
         if not result["success"]:
-            QMessageBox.warning(self, "Add item", result["message"])
+            message = _in_use_message(result["path"]) if result["reason"] == "SOURCE_IN_USE" else result["message"]
+            QMessageBox.warning(self, "Add item", message)
             return
 
         if result["reason"] == "DUPLICATE":

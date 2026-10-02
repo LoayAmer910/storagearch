@@ -14,11 +14,13 @@ Windows UI prompt - StorageArch must never hang waiting on anything here.
 import ctypes
 import json
 import os
+import time
 from ctypes import wintypes
 
 from . import local_state
 
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
+DELETE_RETRY_SECONDS = 2.0
 
 
 class DATA_BLOB(ctypes.Structure):
@@ -110,9 +112,19 @@ def load_credentials():
 
 
 def delete_credentials():
+    """Removes the stored credentials. A reader in this app (the background sender) may hold the file for a
+    few milliseconds, which Windows reports as a sharing violation - so a held file is retried for up to
+    DELETE_RETRY_SECONDS. Raises OSError if it still cannot be removed: a disconnect must never report
+    success while the credentials remain."""
     path = local_state.credentials_path()
-    if os.path.isfile(path):
+    deadline = time.monotonic() + DELETE_RETRY_SECONDS
+    while True:
         try:
             os.remove(path)
-        except OSError:
-            pass
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
