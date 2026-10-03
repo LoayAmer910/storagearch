@@ -47,7 +47,7 @@ jobs:
           "STORAGEARCH_JXL_TOOLS_DIR=$tools" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Smoke
-        run: python -m pytest tests_core/test_00_smoke.py -q -p no:cacheprovider
+        run: python -m pytest tests/test_smoke.py -q -p no:cacheprovider
 
       - name: All tests
-        run: python -m pytest tests_core -q -p no:cacheprovider --durations=10
+        run: python -m pytest -q -p no:cacheprovider --durations=10

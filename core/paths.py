@@ -104,7 +104,7 @@ def is_cloud_placeholder(path):
         attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
     except (OSError, AttributeError):
         return False
-    if attrs == 0xFFFFFFFF:
+    if attrs in (-1, 0xFFFFFFFF):  # INVALID_FILE_ATTRIBUTES: ctypes returns it as a signed int (-1)
         return False
     return bool(attrs & (0x1000 | 0x40000 | 0x400000))  # OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS
 

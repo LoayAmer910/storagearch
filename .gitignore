@@ -2,8 +2,20 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+venv/
+env/
 dist/
 build/
+*.egg-info/
+# test coverage output
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+# secrets and editor settings
+.env
+.vscode/
+.idea/
 # data the app creates where it is started
 SmartArchiveData/
 storagearch_config.json

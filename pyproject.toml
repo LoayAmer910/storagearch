@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+# One tests/ folder at the root. The importlib mode lets test files in different folders share a name
+# (tests/core/test_workers.py and tests/gui/test_workers.py); the repository root and tests/ go on sys.path so
+# the code under test (core, gui, local_cloud, scripts) and the shared helpers (support) import directly.
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
+pythonpath = [".", "tests"]
