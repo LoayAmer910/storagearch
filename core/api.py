@@ -376,7 +376,8 @@ def _after_write(archive_id, zip_path, category):
 
 def _planned_from_decision(decision, source, member_path, relative_path):
     return PlannedMember(member_path, relative_path, "file", decision.method, decision.strategy_version, source,
-                         decision.stored_path, decision.info.sha256, decision.info.size, _mtime(source))
+                         decision.stored_path, decision.info.sha256, decision.info.size, _mtime(source),
+                         decision.stored_bytes)
 
 
 def _mtime(path):
@@ -620,7 +621,9 @@ def _checkout(item_id, destination):
         return None, "INSUFFICIENT_SPACE"
     try:
         with OperationScope("checkout", temp_root=config.temp_dir()) as scope:
-            store.extract_members(zip_path, members, dest, work_root=scope.root, restorer=Executor(scope).restore)
+            executor = Executor(scope)
+            store.extract_members(zip_path, members, dest, work_root=scope.root, restorer=executor.restore,
+                                  streams=executor.runs_in_process)
     except (store.RestoreError, ExtractionRefused) as exc:
         log.error("checkout of item %s failed: %s", item_id, exc)
         if os.path.isdir(target) and not destination:

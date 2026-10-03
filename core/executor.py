@@ -11,12 +11,16 @@ import threading
 from dataclasses import dataclass
 
 from core import candidate
+from core.strategies.base import CHUNK, StreamingStrategy
 from core.workers import WorkerPool
 
 CPU_GATE = threading.BoundedSemaphore(max(1, os.cpu_count() or 1))
 # Heavy strategies (JPEG XL, LZMA, Brotli) additionally share half the cores: their measured speed feeds the
 # policy, and it must reflect the work, not a pile-up of every heavy candidate of a folder at once.
 HEAVY_GATE = threading.BoundedSemaphore(max(1, (os.cpu_count() or 2) // 2))
+# The stored bytes of small files tried in memory wait in memory until the whole folder is written; past this
+# much per operation they go to a temporary file as before.
+MEMORY_BUDGET_BYTES = 256 * 1024 * 1024
 
 
 class _Gates:
@@ -40,10 +44,11 @@ class CandidateOutcome:
     status: str
     stored_path: str | None = None
     stored_size: int | None = None
+    stored_bytes: bytes | None = None   # instead of stored_path, for a small file tried in memory
     compress_s: float = 0.0
     restore_s: float = 0.0
     detail: str = ""
-    where: str = ""                 # "thread" or "worker"
+    where: str = ""                 # "memory", "thread" or "worker"
 
     @property
     def verified(self):
@@ -59,6 +64,17 @@ class Executor:
         self.allow_in_process = allow_in_process
         self._pool = None
         self._pool_lock = threading.Lock()
+        self._memory_left = MEMORY_BUDGET_BYTES
+        self._memory_lock = threading.Lock()
+
+    def keep_in_memory(self, size):
+        """Reserves room for a winner's stored bytes until they are written to the archive; False once this
+        operation already holds MEMORY_BUDGET_BYTES (the caller then writes them to a file instead)."""
+        with self._memory_lock:
+            if size > self._memory_left:
+                return False
+            self._memory_left -= size
+            return True
 
     def pool(self):
         with self._pool_lock:
@@ -71,8 +87,13 @@ class Executor:
         spec = strategy.spec
         return self.allow_in_process and spec.in_process_safe and size <= spec.max_in_process_bytes
 
-    def run(self, strategy, src_path, info):
-        """`info` is the file's ContentInfo (size and SHA-256 of the original)."""
+    def runs_in_memory(self, strategy, size):
+        """A small file (one chunk) tried by a pure codec: in memory, with no temporary file at all."""
+        return isinstance(strategy, StreamingStrategy) and size <= CHUNK and self.runs_in_process(strategy, size)
+
+    def run(self, strategy, src_path, info, data=None):
+        """`info` is the file's ContentInfo (size and SHA-256 of the original); `data` its bytes, when the
+        caller read a small file into memory (then a pure codec tries it without temporary files)."""
         name = strategy.name
         if self.scope.cancelled:
             return CandidateOutcome(name, candidate.CANCELLED, detail="operation cancelled")
@@ -82,6 +103,14 @@ class Executor:
             ok, reason = False, f"{type(exc).__name__}: {exc}"
         if not ok:
             return CandidateOutcome(name, candidate.UNAVAILABLE, detail=reason)
+
+        if data is not None and len(data) == info.size and self.runs_in_memory(strategy, info.size):
+            with _Gates(strategy.spec.weight == "heavy"):
+                result = candidate.run_candidate_in_memory(strategy, data, info.sha256)
+            return CandidateOutcome(
+                name=name, status=result.get("status", candidate.ERROR), stored_size=result.get("stored_size"),
+                stored_bytes=result.get("stored_bytes"), compress_s=result.get("compress_s", 0.0),
+                restore_s=result.get("restore_s", 0.0), detail=result.get("detail", ""), where="memory")
 
         timeout_s = strategy.spec.timeout_s(info.size)
         work_dir = self.scope.work_dir(name)

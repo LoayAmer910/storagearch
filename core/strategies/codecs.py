@@ -1,6 +1,8 @@
 """General-purpose codecs: Deflate (the baseline), zstd, zstd with long-distance matching, zlib, xz/LZMA,
 xz/LZMA with the x86 branch filter, and Brotli. All stream in chunks, so memory does not grow with the
-file, and all detect a truncated or damaged stored stream instead of returning short output.
+file, and all detect a truncated or damaged stored stream instead of returning short output. Each is an
+encode/decode pair over byte chunks (StreamingStrategy): the file form and the in-memory form are the same
+code, so they give the same stored bytes.
 
 Levels are the ones measured on the old version (knowledge, not code): zstd 19 below 15 MiB and 9 from
 15 MiB (255 MB file: same ratio, 35x faster); zstd long-range at level 12 with a 128 MiB window
@@ -9,30 +11,15 @@ Levels are the ones measured on the old version (knowledge, not code): zstd 19 b
 far less memory on small files.
 """
 import lzma
-import os
 import zlib
 from compression import zstd
 
 import brotli
 
-from core.strategies.base import MIB, Strategy, StrategyError, StrategySpec
+from core.strategies.base import CHUNK, MIB, StrategyError, StrategySpec, StreamingStrategy, file_chunks  # noqa: F401
 
-CHUNK = MIB
 LARGE_FILE_BYTES = 15 * MIB
 _ZSTD_LDM_WINDOW_LOG = 27
-
-
-def _chunks(path):
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read(CHUNK)
-            if not chunk:
-                return
-            yield chunk
-
-
-def _size(path):
-    return os.path.getsize(path)
 
 
 def _spec(name, weight, base, per_mib, max_in_process=64 * MIB, version=1):
@@ -40,59 +27,55 @@ def _spec(name, weight, base, per_mib, max_in_process=64 * MIB, version=1):
                         max_in_process_bytes=max_in_process, base_timeout_s=base, seconds_per_mib=per_mib)
 
 
-class DeflateStrategy(Strategy):
+def _encode_with(c, chunks, finish):
+    for chunk in chunks:
+        yield c.compress(chunk)
+    yield finish()
+
+
+class DeflateStrategy(StreamingStrategy):
     """Raw Deflate at zlib's default level - exactly what a plain ZIP member costs. The baseline every
     other strategy is measured against."""
     spec = _spec("deflate", "light", 30, 0.5)
+    suffix = ".deflate"
 
-    def compress(self, src_path, work_dir, time_limit_s=None):
-        out = os.path.join(work_dir, "stored.deflate")
+    def encode(self, chunks, size):
         c = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
-        with open(out, "wb") as f:
-            for chunk in _chunks(src_path):
-                f.write(c.compress(chunk))
-            f.write(c.flush())
-        return out
+        return _encode_with(c, chunks, c.flush)
 
-    def restore(self, stored_path, work_dir, time_limit_s=None):
-        return _zlib_restore(stored_path, work_dir, wbits=-15)
+    def decode(self, chunks):
+        return _zlib_decode(chunks, wbits=-15)
 
 
-class ZlibStrategy(Strategy):
+class ZlibStrategy(StreamingStrategy):
     spec = _spec("zlib", "light", 30, 0.5)
+    suffix = ".zlib"
 
-    def compress(self, src_path, work_dir, time_limit_s=None):
-        out = os.path.join(work_dir, "stored.zlib")
+    def encode(self, chunks, size):
         c = zlib.compressobj(9, zlib.DEFLATED, 15)
-        with open(out, "wb") as f:
-            for chunk in _chunks(src_path):
-                f.write(c.compress(chunk))
-            f.write(c.flush())
-        return out
+        return _encode_with(c, chunks, c.flush)
 
-    def restore(self, stored_path, work_dir, time_limit_s=None):
-        return _zlib_restore(stored_path, work_dir, wbits=15)
+    def decode(self, chunks):
+        return _zlib_decode(chunks, wbits=15)
 
 
-def _zlib_restore(stored_path, work_dir, wbits):
-    out = os.path.join(work_dir, "restored.bin")
+def _zlib_decode(chunks, wbits):
     d = zlib.decompressobj(wbits)
     try:
-        with open(out, "wb") as f:
-            for chunk in _chunks(stored_path):
-                f.write(d.decompress(chunk))
-                if d.unused_data:
-                    raise StrategyError("trailing data after the compressed stream")
-            f.write(d.flush())
+        for chunk in chunks:
+            yield d.decompress(chunk)
+            if d.unused_data:
+                raise StrategyError("trailing data after the compressed stream")
+        yield d.flush()
     except zlib.error as exc:
         raise StrategyError(f"damaged stream: {exc}") from exc
     if not d.eof:
         raise StrategyError("truncated stream")
-    return out
 
 
-class ZstdStrategy(Strategy):
+class ZstdStrategy(StreamingStrategy):
     spec = _spec("zstd", "light", 30, 1.0)
+    suffix = ".zst"
 
     @staticmethod
     def level_for(size):
@@ -102,20 +85,15 @@ class ZstdStrategy(Strategy):
         return {zstd.CompressionParameter.compression_level: self.level_for(size),
                 zstd.CompressionParameter.checksum_flag: 1}
 
-    def compress(self, src_path, work_dir, time_limit_s=None):
+    def encode(self, chunks, size):
         # An explicit compressor, not zstd.open(): flush() always ends a complete frame, so even an empty
         # input gives a stream that restores (zstd.open wrote nothing at all for an empty file).
-        out = os.path.join(work_dir, "stored.zst")
-        c = zstd.ZstdCompressor(options=self._options(_size(src_path)))
-        with open(out, "wb") as f:
-            for chunk in _chunks(src_path):
-                f.write(c.compress(chunk))
-            f.write(c.flush())
-        return out
+        c = zstd.ZstdCompressor(options=self._options(size))
+        return _encode_with(c, chunks, c.flush)
 
-    def restore(self, stored_path, work_dir, time_limit_s=None):
-        return _single_stream_restore(zstd.ZstdDecompressor(options=self._decompress_options()),
-                                      stored_path, work_dir, zstd.ZstdError)
+    def decode(self, chunks):
+        return _single_stream_decode(zstd.ZstdDecompressor(options=self._decompress_options()), chunks,
+                                     zstd.ZstdError)
 
     def _decompress_options(self):
         return None
@@ -148,24 +126,18 @@ def _lzma_filters(size, x86):
     return [{"id": lzma.FILTER_X86}, lzma2] if x86 else [lzma2]
 
 
-class LzmaStrategy(Strategy):
+class LzmaStrategy(StreamingStrategy):
     spec = _spec("lzma", "heavy", 30, 2.0, max_in_process=16 * MIB)
+    suffix = ".xz"
     x86 = False
 
-    def compress(self, src_path, work_dir, time_limit_s=None):
-        out = os.path.join(work_dir, "stored.xz")
-        c = lzma.LZMACompressor(format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC64,
-                                filters=_lzma_filters(_size(src_path), self.x86))
-        with open(out, "wb") as f:
-            for chunk in _chunks(src_path):
-                f.write(c.compress(chunk))
-            f.write(c.flush())
-        return out
+    def encode(self, chunks, size):
+        c = lzma.LZMACompressor(format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC64, filters=_lzma_filters(size, self.x86))
+        return _encode_with(c, chunks, c.flush)
 
-    def restore(self, stored_path, work_dir, time_limit_s=None):
+    def decode(self, chunks):
         # One xz stream, nothing after it (lzma.open silently ignored trailing data).
-        return _single_stream_restore(lzma.LZMADecompressor(format=lzma.FORMAT_XZ), stored_path, work_dir,
-                                      lzma.LZMAError)
+        return _single_stream_decode(lzma.LZMADecompressor(format=lzma.FORMAT_XZ), chunks, lzma.LZMAError)
 
 
 class LzmaX86Strategy(LzmaStrategy):
@@ -174,51 +146,43 @@ class LzmaX86Strategy(LzmaStrategy):
     x86 = True
 
 
-def _single_stream_restore(d, stored_path, work_dir, errors):
+def _single_stream_decode(d, chunks, errors):
     """Decompresses exactly one stream: refuses a truncated stream and anything after its end."""
-    out = os.path.join(work_dir, "restored.bin")
     try:
-        with open(out, "wb") as f:
-            for chunk in _chunks(stored_path):
-                if d.eof:
-                    raise StrategyError("trailing data after the compressed stream")
-                f.write(d.decompress(chunk))
-                if d.eof and d.unused_data:
-                    raise StrategyError("trailing data after the compressed stream")
+        for chunk in chunks:
+            if d.eof:
+                raise StrategyError("trailing data after the compressed stream")
+            yield d.decompress(chunk)
+            if d.eof and d.unused_data:
+                raise StrategyError("trailing data after the compressed stream")
     except errors as exc:
         raise StrategyError(f"damaged stream: {exc}") from exc
     if not d.eof:
         raise StrategyError("truncated stream")
-    return out
 
 
-class BrotliStrategy(Strategy):
+class BrotliStrategy(StreamingStrategy):
     spec = _spec("brotli", "heavy", 30, 3.0, max_in_process=16 * MIB)
+    suffix = ".br"
 
     @staticmethod
     def quality_for(size):
         return 9 if size >= 4 * MIB else 11
 
-    def compress(self, src_path, work_dir, time_limit_s=None):
-        out = os.path.join(work_dir, "stored.br")
-        c = brotli.Compressor(quality=self.quality_for(_size(src_path)), lgwin=24)
-        with open(out, "wb") as f:
-            for chunk in _chunks(src_path):
-                f.write(c.process(chunk))
-            f.write(c.finish())
-        return out
+    def encode(self, chunks, size):
+        c = brotli.Compressor(quality=self.quality_for(size), lgwin=24)
+        for chunk in chunks:
+            yield c.process(chunk)
+        yield c.finish()
 
-    def restore(self, stored_path, work_dir, time_limit_s=None):
-        out = os.path.join(work_dir, "restored.bin")
+    def decode(self, chunks):
         d = brotli.Decompressor()
         try:
-            with open(out, "wb") as f:
-                for chunk in _chunks(stored_path):
-                    if d.is_finished():
-                        raise StrategyError("trailing data after the compressed stream")
-                    f.write(d.process(chunk))
+            for chunk in chunks:
+                if d.is_finished():
+                    raise StrategyError("trailing data after the compressed stream")
+                yield d.process(chunk)
         except brotli.error as exc:
             raise StrategyError(f"damaged stream: {exc}") from exc
         if not d.is_finished():
             raise StrategyError("truncated stream")
-        return out

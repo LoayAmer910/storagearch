@@ -11,7 +11,7 @@ import concurrent.futures
 import os
 import shutil
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from core import content
 from core import policy as policy_module
@@ -34,6 +34,7 @@ class Decision:
     baseline_size: int
     candidates: tuple[CandidateOutcome, ...] = ()
     verdicts: dict = field(default_factory=dict)
+    stored_bytes: bytes | None = None   # the winner's stored bytes, instead of stored_path, for a small file
 
     @property
     def smart(self):
@@ -93,8 +94,12 @@ class Pipeline:
         chosen = list(self.route(info))
         if not chosen:
             return baseline
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(chosen), thread_name_prefix="candidate") as pool:
-            outcomes = list(pool.map(lambda s: self.executor.run(s, path, info), chosen))
+        data = _read_small(path, info.size) if any(self.executor.runs_in_memory(s, info.size) for s in chosen) else None
+        if len(chosen) == 1:
+            outcomes = [self.executor.run(chosen[0], path, info, data)]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(chosen), thread_name_prefix="candidate") as pool:
+                outcomes = list(pool.map(lambda s: self.executor.run(s, path, info, data), chosen))
         scope.raise_if_cancelled()
 
         verdicts = {}
@@ -111,12 +116,33 @@ class Pipeline:
             if outcome.stored_path and (best is None or outcome is not best[1]):
                 _remove_candidate_dir(outcome.stored_path, scope.root)
 
+        kept = tuple(replace(o, stored_bytes=None) if o.stored_bytes is not None else o for o in outcomes)
         if best is None:
-            return Decision(info, baseline_method, 0, None, baseline_size, baseline_method, baseline_size,
-                            tuple(outcomes), verdicts)
+            return Decision(info, baseline_method, 0, None, baseline_size, baseline_method, baseline_size, kept, verdicts)
         strategy, outcome = best
-        return Decision(info, strategy.name, strategy.spec.version, outcome.stored_path, outcome.stored_size,
-                        baseline_method, baseline_size, tuple(outcomes), verdicts)
+        stored_path, stored_bytes = outcome.stored_path, outcome.stored_bytes
+        if stored_bytes is not None and not self.executor.keep_in_memory(len(stored_bytes)):
+            stored_path, stored_bytes = _spill(stored_bytes, scope.work_dir(strategy.name)), None
+        return Decision(info, strategy.name, strategy.spec.version, stored_path, outcome.stored_size,
+                        baseline_method, baseline_size, kept, verdicts, stored_bytes=stored_bytes)
+
+
+def _read_small(path, size):
+    """The bytes of a small file, or None if it no longer has the size it was scanned with."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read(size + 1)
+    except OSError:
+        return None
+    return data if len(data) == size else None
+
+
+def _spill(stored_bytes, work_dir):
+    """Writes stored bytes that do not fit in the operation's memory budget to a file."""
+    path = os.path.join(work_dir, "stored")
+    with open(path, "wb") as f:
+        f.write(stored_bytes)
+    return path
 
 
 def _remove_candidate_dir(stored_path, scope_root):

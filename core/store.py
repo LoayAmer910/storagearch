@@ -17,23 +17,28 @@ Extracting (I1, I7)
     Every target path comes from paths.safe_target(); a member is restored into a temporary file next to its
     target, compared with its original SHA-256, and only then renamed into place.
 """
+import concurrent.futures
 import hashlib
+import io
 import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import zipfile
 from dataclasses import dataclass
 
 from core import paths, strategies
 from core.catalog import EMPTY_DIGEST
+from core.strategies.base import StrategyError, StreamingStrategy
 
 SMART_SUFFIX = ".sa"
 BASELINE_METHODS = ("deflate", "stored")
 ZIP_WRITE_CHUNK = 8 * 1024          # zipfile's own write size; the baseline measured by the pipeline assumes it
 _READ_CHUNK = 1024 * 1024
 _ZIP64_THRESHOLD = 0x7FFF0000
+EXTRACT_WORKERS = 4                 # measured: the system's cost per new file overlaps up to ~4 threads
 
 
 class StoreError(Exception):
@@ -60,6 +65,7 @@ class PlannedMember:
     original_sha256: str = EMPTY_DIGEST
     original_size: int = 0
     mtime: float | None = None
+    stored_bytes: bytes | None = None  # the strategy's output in memory, instead of stored_path (a small file)
 
 
 def sha256_file(path):
@@ -155,9 +161,12 @@ def _write_one(z, m):
         info.comment = json.dumps({"s": m.method, "v": m.method_version, "sha256": m.original_sha256,
                                    "size": m.original_size, "mtime": m.mtime}, separators=(",", ":")).encode()
         source, expect = m.stored_path, None
-    info.file_size = os.path.getsize(source)
+        if m.stored_bytes is not None:
+            source = io.BytesIO(m.stored_bytes)
+    info.file_size = len(m.stored_bytes) if isinstance(source, io.BytesIO) else os.path.getsize(source)
     written = hashlib.sha256()
-    with open(source, "rb") as src, z.open(info, "w", force_zip64=info.file_size > _ZIP64_THRESHOLD) as dst:
+    with (source if isinstance(source, io.BytesIO) else open(source, "rb")) as src, \
+            z.open(info, "w", force_zip64=info.file_size > _ZIP64_THRESHOLD) as dst:
         while chunk := src.read(ZIP_WRITE_CHUNK):
             written.update(chunk)
             dst.write(chunk)
@@ -261,29 +270,66 @@ def _restore_in_process(strategy, stored_path, out_dir, original_size):
     return strategy.restore(stored_path, out_dir, strategy.spec.timeout_s(original_size))
 
 
-def extract_members(zip_path, members, destination, work_root=None, restorer=None):
+def _streams_in_process(strategy, size):
+    spec = strategy.spec
+    return isinstance(strategy, StreamingStrategy) and spec.in_process_safe and size <= spec.max_in_process_bytes
+
+
+def extract_members(zip_path, members, destination, work_root=None, restorer=None, streams=None,
+                    workers=EXTRACT_WORKERS):
     """Restores catalog member rows under `destination` (each at its relative_path). Every file is verified
     against its original SHA-256 before it appears under its name. `restorer(strategy, stored, out_dir, size)`
     runs a smart member's restore (the API passes Executor.restore, so it is killable); by default it runs
-    in-process. Returns the restored paths."""
+    in-process. A smart member whose codec may run here (`streams(strategy, size)`) is decoded straight from
+    the archive into its file instead - no temporary files. Files are restored by `workers` threads: the
+    time per small file is mostly the system opening the new file, which overlaps well. Returns the
+    restored paths."""
     restorer = restorer or _restore_in_process
+    streams = streams or _streams_in_process
     targets = [(m, paths.safe_target(destination, m["relative_path"])) for m in members]  # refuse before writing anything
-    restored = []
     try:
-        with zipfile.ZipFile(zip_path) as z:
-            for member, target in targets:
-                if member["kind"] == "dir":
-                    os.makedirs(target, exist_ok=True)
-                    continue
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                _extract_file(z, member, target, work_root, restorer)
-                restored.append(target)
-    except (zipfile.BadZipFile, KeyError, OSError, EOFError) as exc:
+        for member, target in targets:
+            os.makedirs(target if member["kind"] == "dir" else os.path.dirname(target), exist_ok=True)
+    except OSError as exc:
         raise RestoreError(f"cannot restore from {zip_path}: {exc}") from exc
-    return restored
+    files = [(m, t) for m, t in targets if m["kind"] != "dir"]
+    local, opened, failed = threading.local(), [], threading.Event()
+    opened_lock = threading.Lock()
+
+    def one(job):
+        member, target = job
+        if failed.is_set():
+            return None
+        try:
+            z = getattr(local, "zip", None)
+            if z is None:
+                z = local.zip = zipfile.ZipFile(zip_path)
+                with opened_lock:
+                    opened.append(z)
+            _extract_file(z, member, target, work_root, restorer, streams)
+            return target
+        except (zipfile.BadZipFile, KeyError, OSError, EOFError) as exc:
+            failed.set()
+            raise RestoreError(f"cannot restore from {zip_path}: {exc}") from exc
+        except BaseException:
+            failed.set()
+            raise
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(workers, len(files))),
+                                                   thread_name_prefix="restore") as pool:
+            futures = [pool.submit(one, job) for job in files]
+            done = [f.exception() for f in futures]
+        errors = [e for e in done if e is not None]
+        if errors:
+            raise errors[0]
+        return [f.result() for f in futures]
+    finally:
+        for z in opened:
+            z.close()
 
 
-def _extract_file(z, member, target, work_root, restorer):
+def _extract_file(z, member, target, work_root, restorer, streams=_streams_in_process):
     part = target + ".restoring"
     try:
         if member["method"] in BASELINE_METHODS:
@@ -294,7 +340,7 @@ def _extract_file(z, member, target, work_root, restorer):
                     dst.write(chunk)
             digest = h.hexdigest()
         else:
-            digest = _restore_smart(z, member, part, work_root, restorer)
+            digest = _restore_smart(z, member, part, work_root, restorer, streams)
         if digest != member["original_sha256"]:
             raise RestoreError(f"{member['relative_path']} did not restore to its original bytes")
         os.replace(part, target)
@@ -302,7 +348,7 @@ def _extract_file(z, member, target, work_root, restorer):
         _silent_remove(part)
 
 
-def _restore_smart(z, member, part, work_root, restorer):
+def _restore_smart(z, member, part, work_root, restorer, streams=_streams_in_process):
     strategy = strategies.get(member["method"])
     if strategy.spec.version != member["method_version"]:
         raise RestoreError(f"{member['relative_path']} was stored with {member['method']} format "
@@ -310,6 +356,16 @@ def _restore_smart(z, member, part, work_root, restorer):
     ok, reason = strategy.available()
     if not ok:
         raise RestoreError(f"{member['relative_path']} needs {member['method']}: {reason}")
+    if isinstance(strategy, StreamingStrategy) and streams(strategy, member["original_size"]):
+        h = hashlib.sha256()
+        try:
+            with z.open(member["path_in_archive"]) as src, open(part, "wb") as dst:
+                for piece in strategy.decode(iter(lambda: src.read(_READ_CHUNK), b"")):
+                    h.update(piece)
+                    dst.write(piece)
+        except (StrategyError, zipfile.BadZipFile, EOFError, RuntimeError) as exc:
+            raise RestoreError(f"{member['relative_path']}: {type(exc).__name__}: {exc}") from exc
+        return h.hexdigest()
     work = tempfile.mkdtemp(prefix="restore_", dir=work_root)
     try:
         stored = os.path.join(work, "stored")

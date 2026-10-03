@@ -149,7 +149,10 @@ def test_a_decision_is_never_worse_than_the_baseline(samples, scope):
         assert d.stored_size <= d.baseline_size, sample.name
         if d.smart:
             assert d.stored_size < d.baseline_size and d.verdicts[d.method].accepted, sample.name
-            assert os.path.isfile(d.stored_path)
+            if d.stored_bytes is not None:  # a small file, tried in memory
+                assert d.stored_path is None and len(d.stored_bytes) == d.stored_size, sample.name
+            else:
+                assert os.path.getsize(d.stored_path) == d.stored_size, sample.name
 
 
 def test_same_bytes_under_another_name_get_the_same_decision(samples, scope, tmp_path):

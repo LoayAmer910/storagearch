@@ -65,6 +65,29 @@ def run_candidate(strategy, src_path, work_dir, expected_sha256, time_limit_s=No
         shutil.rmtree(restore_dir, ignore_errors=True)
 
 
+def run_candidate_in_memory(strategy, data, expected_sha256):
+    """run_candidate for a small file held in memory, by a StreamingStrategy: the same compress, restore and
+    SHA-256 comparison, without a temporary file - nothing is written and read back from disk (a file that
+    was just written is scanned when it is opened again, which made small files slow). The stored bytes
+    travel back as "stored_bytes". `data` must be a single chunk (at most base.CHUNK bytes): then the stored
+    bytes are exactly the ones the file form gives."""
+    try:
+        t0 = _cpu_now()
+        stored = b"".join(strategy.encode([data] if data else [], len(data)))
+        compress_s = _cpu_now() - t0
+        t0 = _cpu_now()
+        h = hashlib.sha256()
+        for piece in strategy.decode([stored]):
+            h.update(piece)
+        restore_s = _cpu_now() - t0
+        status = VERIFIED if h.hexdigest() == expected_sha256 else MISMATCH
+        return {"status": status, "stored_bytes": stored if status == VERIFIED else None, "stored_size": len(stored),
+                "compress_s": compress_s, "restore_s": restore_s,
+                "detail": "" if status == VERIFIED else "restored bytes differ from the original"}
+    except Exception as exc:  # noqa: BLE001 - a failing candidate is a result, never an error of the caller
+        return {"status": ERROR, "detail": f"{type(exc).__name__}: {exc}"[:500]}
+
+
 def run_restore(strategy, stored_path, out_dir, time_limit_s=None):
     """Restores one stored file into out_dir. Never raises: returns {"status", "restored_path", "detail"}.
     The caller compares the result with the original SHA-256."""
