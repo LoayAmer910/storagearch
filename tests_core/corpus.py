@@ -29,8 +29,10 @@ class Sample:
 
 
 def lines(n, template, seed=7):
+    """n lines from `template`: {i} the line number, {w} a word, {n} a number, {mm}:{ss} a clock time."""
     rng = random.Random(seed)
-    return "".join(template.format(i=i, w=rng.choice(_WORDS), n=rng.randrange(1000)) for i in range(n)).encode()
+    return "".join(template.format(i=i, w=rng.choice(_WORDS), n=rng.randrange(1000), mm=i // 60 % 60, ss=i % 60)
+                   for i in range(n)).encode()
 
 
 def photo(width, height, seed):
@@ -98,13 +100,13 @@ def build(root):
             f.write(data)
         samples[name] = Sample(name, path, kind, compressible)
 
-    add("text.log", lines(600, "2026-09-26 12:00:{n:02d} INFO request {i} path=/api/{w}/{n} status=200\n"), K.TEXT, True)
+    add("text.log", lines(600, "2026-09-26 12:{mm:02d}:{ss:02d} INFO request {i} path=/api/{w}/{n} status=200\n"), K.TEXT, True)
     add("text.csv", b"id,name,region,amount\n" + lines(900, "{i},{w},{w},{n}.50\n"), K.TEXT, True)
     add("text.json", b"[" + b",".join(b'{"id": %d, "tag": "%s"}' % (i, _WORDS[i % 10].encode()) for i in range(700)) + b"]", K.TEXT, True)
     add("text.py", lines(400, "def function_{i}(value):\n    return value + {n}  # {w}\n\n"), K.TEXT, True)
     add("text.md", lines(500, "## Section {i}\n\nSome {w} text about item {n}.\n\n"), K.TEXT, True)
     # Hebrew on purpose: UTF-8 text in a non-Latin script must still be recognized as text
-    add("text_utf8.txt", ("שורה {} בעברית עם מילים חוזרות ונשנות\n" * 400).encode("utf-8"), K.TEXT, True)
+    add("text_utf8.txt", lines(400, "שורה {i} בעברית: המילה {w} והמספר {n}\n"), K.TEXT, True)
     add("text_utf16.txt", "﻿".encode("utf-16-le") + ("line of utf-16 text\r\n" * 300).encode("utf-16-le"), K.TEXT, True)
     add("text_latin1.txt", ("caf\xe9 cr\xe8me br\xfbl\xe9e number {}\n" * 300).encode("latin-1"), K.TEXT, True)
     add("trap_bm_text.txt", b"BMW service report\n" + lines(300, "car {i} {w} {n}\n"), K.TEXT, True)
