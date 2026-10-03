@@ -24,9 +24,9 @@ from gui.format_utils import ARCHIVE_SIZE_PRESETS
 
 class CreateCategoryDialog(QDialog):
     """
-    7.2 - יצירת קטגוריה: שם, תיאור, צבע, גודל מרבי לארכיון.
-    8.2 - אותו דיאלוג משמש גם לעריכת קטגוריה קיימת (initial_values), כדי לא
-    לשכפל טופס זהה; folder_name הפיזי אינו חלק מהטופס בכלל ולעולם לא נערך.
+    Creates a category: name, description, color and maximum archive size.
+    The same dialog edits an existing category (initial_values), so the form is not duplicated.
+    The category's folder name on disk is not part of the form and is never edited.
     """
 
     def __init__(self, parent=None, default_max_size=2147483648, title="New Category", initial_values=None):
@@ -85,7 +85,7 @@ class CreateCategoryDialog(QDialog):
 
 
 class SourceActionDialog(QDialog):
-    """7.3.11-12 - מה לעשות עם המקור אחרי ארכוב מוצלח. מחיקה לצמיתות דורשת אישור נוסף."""
+    """What to do with the original after a successful archive. Permanent deletion asks for confirmation again."""
 
     KEEP, RECYCLE, DELETE = "keep", "recycle", "delete"
 
@@ -138,8 +138,8 @@ class SourceActionDialog(QDialog):
 
 class PendingCheckoutsDialog(QDialog):
     """
-    בזמן סגירת התוכנה, אם יש פריטים CHECKED_OUT: להציג אותם ולתת בחירה,
-    בלי להחזיר או למחוק אוטומטית (11.10).
+    When the app closes with items still checked out: lists them and lets the user choose.
+    Nothing is checked in or deleted automatically.
     """
 
     RETURN_SELECTED, LEAVE_CHECKED_OUT, CANCEL = "return_selected", "leave", "cancel"

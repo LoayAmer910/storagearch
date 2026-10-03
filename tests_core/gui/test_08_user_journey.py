@@ -48,6 +48,7 @@ CATEGORY_NAMES = [
     ("", "warning", "cannot be empty"),
     ("     ", "warning", "cannot be empty"),
     ("a/b:c*?|", "information", "created"),
+    # Hebrew on purpose: non-ASCII category names must work
     ("קטגוריה בעברית", "information", "created"),
     ("x" * 500, "information", "created"),
 ]

@@ -97,6 +97,7 @@ def _content_back(name, sandbox, sub="back"):
 
 # --- categories ---------------------------------------------------------------------------------------
 
+# Hebrew on purpose: non-ASCII category names must work
 @pytest.mark.parametrize("name", ["CON", "nul", "com1", "abc.", "trailing ", "..", ".", "a\\b/c", "📁 תמונות",
                                   "tab\there", "line\nbreak", "  Docs  "])
 def test_category_names_windows_would_choke_on(gui_window, qtbot, monkeypatch, message_boxes, sandbox, name):
@@ -175,7 +176,7 @@ def test_a_file_another_program_holds_open(gui_window, qtbot, monkeypatch, messa
     with locked(doc):
         _archive_file_through_gui(gui_window, qtbot, monkeypatch, str(doc), "Docs")
         kind, _title, text = _last(message_boxes)
-        assert kind == "warning" and "open_in_word.docx" in text and "פתוח בתוכנה אחרת" in text, message_boxes.calls
+        assert kind == "warning" and "open_in_word.docx" in text and "open in another program" in text, message_boxes.calls
     assert api.search("") == []
     _archive_file_through_gui(gui_window, qtbot, monkeypatch, str(doc), "Docs")  # closed it, tries again
     assert "archived and verified" in _last(message_boxes)[2]
@@ -202,7 +203,7 @@ def test_a_file_that_gets_locked_after_the_duplicate_check(gui_window, qtbot, mo
         for h in handles:
             _kernel32.CloseHandle(h)
     kind, _title, text = _last(message_boxes)
-    assert kind == "warning" and "report.xlsx" in text and "פתוח בתוכנה אחרת" in text, message_boxes.calls
+    assert kind == "warning" and "report.xlsx" in text and "open in another program" in text, message_boxes.calls
     assert api.search("") == []
     _healthy(gui_window, message_boxes)
 
@@ -216,8 +217,8 @@ def test_a_folder_with_one_file_held_open(gui_window, qtbot, monkeypatch, messag
     with locked(project / "busy.log"):
         _archive_folder_through_gui(gui_window, qtbot, monkeypatch, str(project), "Docs")
         kind, _title, text = _last(message_boxes)
-        assert kind == "warning" and "busy.log" in text and "פתוח בתוכנה אחרת" in text, message_boxes.calls
-        assert "שם תיקייה לא חוקי" not in text
+        assert kind == "warning" and "busy.log" in text and "open in another program" in text, message_boxes.calls
+        assert "name is not valid" not in text
     assert api.search("") == [], "a folder must never be stored with a file silently missing"
     _healthy(gui_window, message_boxes)
 
@@ -392,6 +393,7 @@ def test_the_user_reorganizes_a_checked_out_folder(gui_window, qtbot, monkeypatc
     os.remove(os.path.join(ws, "readme.md"))
     os.rename(os.path.join(ws, "src"), os.path.join(ws, "source"))
     os.makedirs(os.path.join(ws, "empty", "deeper"))
+    # Hebrew on purpose: non-ASCII, right-to-left names must archive and restore exactly
     with open(os.path.join(ws, "הערות.txt"), "w", encoding="utf-8") as f:
         f.write("שלום\n")
     expected = {}
@@ -582,7 +584,7 @@ def test_a_disconnect_that_could_not_finish_is_reported_not_hidden(gui_window, m
     message_boxes.warning_confirm = True
     tab._disconnect_cloud()
     assert message_boxes.calls[-1] == ("warning", "Disconnect", DISCONNECT_FAILED_MESSAGE)
-    assert "תוכנה אחרת" in DISCONNECT_FAILED_MESSAGE and "נסה שוב" in DISCONNECT_FAILED_MESSAGE
+    assert "another program" in DISCONNECT_FAILED_MESSAGE and "Try again" in DISCONNECT_FAILED_MESSAGE
 
 
 def test_a_disconnect_that_finished_shows_no_warning(gui_window, message_boxes, monkeypatch):

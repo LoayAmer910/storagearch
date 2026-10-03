@@ -3,11 +3,11 @@ import os
 
 from core import config as storage_config
 
-# הגדרות ברמת ה-GUI בלבד (לא לוגיקת ארכיון/DB) - קובץ קטן שנודד יחד עם data_root הנוכחי.
+# Settings of the GUI only (not archive or database logic) - a small file that lives in the current data_root.
 _SETTINGS_FILE_NAME = "gui_settings.json"
 
 _DEFAULTS = {
-    "default_max_archive_size": 2147483648,  # 2GB, תואם את ברירת המחדל ב-database_manager
+    "default_max_archive_size": 2147483648,  # 2 GB, the same default as new categories get
 }
 
 

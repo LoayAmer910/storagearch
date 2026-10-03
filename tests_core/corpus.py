@@ -103,6 +103,7 @@ def build(root):
     add("text.json", b"[" + b",".join(b'{"id": %d, "tag": "%s"}' % (i, _WORDS[i % 10].encode()) for i in range(700)) + b"]", K.TEXT, True)
     add("text.py", lines(400, "def function_{i}(value):\n    return value + {n}  # {w}\n\n"), K.TEXT, True)
     add("text.md", lines(500, "## Section {i}\n\nSome {w} text about item {n}.\n\n"), K.TEXT, True)
+    # Hebrew on purpose: UTF-8 text in a non-Latin script must still be recognized as text
     add("text_utf8.txt", ("שורה {} בעברית עם מילים חוזרות ונשנות\n" * 400).encode("utf-8"), K.TEXT, True)
     add("text_utf16.txt", "﻿".encode("utf-16-le") + ("line of utf-16 text\r\n" * 300).encode("utf-16-le"), K.TEXT, True)
     add("text_latin1.txt", ("caf\xe9 cr\xe8me br\xfbl\xe9e number {}\n" * 300).encode("latin-1"), K.TEXT, True)

@@ -113,6 +113,24 @@ def test_the_cloud_client_imports():
     assert events.connect(), "local_cloud must be importable (is a dependency missing?)"
 
 
+def test_the_app_speaks_one_language():
+    """The interface is English: no Hebrew letter anywhere in the product code - messages, comments or
+    docstrings. (The tests keep Hebrew names and text on purpose; they are not checked here.)"""
+    hebrew = [chr(c) for c in range(0x0590, 0x0600)]
+    found = []
+    for folder in ("core", "gui", "local_cloud"):
+        for dirpath, _dirs, files in os.walk(os.path.join(REPO_ROOT, folder)):
+            for name in files:
+                if name.endswith(".py"):
+                    path = os.path.join(dirpath, name)
+                    with open(path, encoding="utf-8") as f:
+                        found += [f"{os.path.relpath(path, REPO_ROOT)}:{n}" for n, line in enumerate(f, 1)
+                                  if any(ch in line for ch in hebrew)]
+    with open(os.path.join(REPO_ROOT, "app.py"), encoding="utf-8") as f:
+        found += [f"app.py:{n}" for n, line in enumerate(f, 1) if any(ch in line for ch in hebrew)]
+    assert found == [], found
+
+
 def test_importing_every_core_module_loads_nothing_from_the_old_engine():
     before = set(sys.modules)
     for name in _core_modules():

@@ -77,6 +77,7 @@ def test_stored_bytes_do_not_depend_on_the_name(name, samples, tmp_path):
     for sample_name in ("text.log", "program.exe", "image.bmp", "random.bin"):
         src = samples[sample_name].path
         outputs = set()
+        # Hebrew on purpose: non-ASCII, right-to-left names must archive and restore exactly
         for j, other in enumerate(("a.txt", "b.jpg", "-dash.bin", "שם.dat", "noext")):
             folder = tmp_path / f"{sample_name}_{j}"
             folder.mkdir()
@@ -151,6 +152,7 @@ def test_jpeg_xl_restores_exactly_under_any_name(sample_name, samples, tmp_path)
     jxl = strategies.get("jpeg_xl")
     src = samples[sample_name].path
     outputs = set()
+    # Hebrew on purpose: non-ASCII, right-to-left names must archive and restore exactly
     for j, other in enumerate(("photo.jpg", "photo.txt", "photo", "-dash.png", "תמונה.JPEG")):
         folder = tmp_path / str(j)
         folder.mkdir()

@@ -198,6 +198,7 @@ def test_compaction_drops_dead_members_and_keeps_live_ones_exact(samples, tmp_pa
 
 
 def test_unicode_names_and_empty_directories_survive(tmp_path):
+    # Hebrew on purpose: non-ASCII, right-to-left names must archive and restore exactly
     src = tmp_path / "תיקייה"
     (src / "ריק").mkdir(parents=True)
     f = src / "קובץ.txt"

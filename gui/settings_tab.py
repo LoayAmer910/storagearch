@@ -18,17 +18,17 @@ from core import api as main
 from gui.dialogs import BetaCodeDialog
 from gui.format_utils import ARCHIVE_SIZE_PRESETS
 
-DISCONNECT_FAILED_MESSAGE = ("ההתנתקות לא הושלמה – תוכנה אחרת (כמו אנטי-וירוס או גיבוי) משתמשת כרגע בנתוני החיבור.\n"
-                             "נסה שוב בעוד רגע.")
+DISCONNECT_FAILED_MESSAGE = ("Disconnect did not finish - another program (such as antivirus or backup) is using the "
+                             "connection data right now.\nTry again in a moment.")
 
 
 class SettingsTab(QWidget):
     """
-    8.5 - הגדרות: מיקום אחסון/עבודה ניתן לשינוי מה-GUI (נשמר ב-storagearch_config.json
-    ונטען מחדש בכל initialize), וגודל ZIP מרבי כברירת מחדל לקטגוריות חדשות.
+    The Settings tab: the data and workspace locations (saved in storagearch_config.json and loaded
+    on every initialize), and the default maximum archive size for new categories.
 
-    שינוי מיקום לעולם לא מעביר/מוחק קבצים קיימים: אם למיקום הנוכחי כבר יש נתונים,
-    המשתמש מקבל אזהרה מפורשת לפני שהוא ממשיך (7.5/11.1 - אין הרס שקט של מידע).
+    Changing a location never moves or deletes existing files: if the current location already holds
+    data, the user gets an explicit warning before going on - data is never lost silently.
     """
 
     def __init__(self, main_window):

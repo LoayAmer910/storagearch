@@ -12,6 +12,7 @@ from core import content
 from core.content import ContentKind as K
 import corpus
 
+# Hebrew on purpose: non-ASCII, right-to-left names must archive and restore exactly
 NAMES = ("x.txt", "x.jpg", "x.png", "x.bmp", "x.docx", "x.exe", "x", "שם בעברית.dat", "UPPER.JPEG", "x.tar.gz")
 
 
@@ -50,6 +51,7 @@ def test_hash_and_size_are_of_the_whole_file(samples):
 
 def test_a_multibyte_character_cut_by_the_sample_boundary_is_still_text(tmp_path):
     for shift in range(4):
+        # Hebrew on purpose: UTF-8 text in a non-Latin script must still be recognized as text
         body = ("x" * (content.SAMPLE_BYTES - 1 - shift) + "ש" * 3000).encode("utf-8")
         path = tmp_path / f"cut_{shift}.txt"
         path.write_bytes(body)

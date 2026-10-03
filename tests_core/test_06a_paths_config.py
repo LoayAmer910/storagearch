@@ -14,6 +14,7 @@ from core.paths import ExtractionRefused
 ESCAPING = ["../x.txt", "a/../../x.txt", "a/..", "..", ".", "a/./b", "a\\..\\x.txt", "a\\b.txt", "/abs.txt",
             "C:/x.txt", "Y:x.txt", "a/Y:x.txt", "a/x.txt:stream", "CON", "a/nul.txt", "a/COM1.log", "a/lpt9",
             "a/b.", "a/b ", "", "a//b", "a/\x00b", "\\\\server\\share\\x", "a/b<c", "a/|", "a/?"]
+# Hebrew on purpose: non-ASCII, right-to-left names must archive and restore exactly
 FINE = ["a.txt", "a/b/c.txt", "..leading.txt", "a..b", "trailing...txt.x", "name with spaces.txt", "שם/קובץ.txt",
         "a/b/", "console.txt", "x" * 100]
 

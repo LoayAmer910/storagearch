@@ -54,6 +54,7 @@ def test_an_old_version_database_is_refused_and_not_modified(tmp_path):
     assert path.read_bytes() == before
 
 
+# Hebrew on purpose: non-ASCII category names must work
 @pytest.mark.parametrize("folder", ["C#Projects", "100% sure", "what?", "שם עם רווח"])
 def test_databases_under_unusual_folder_names_open_and_reopen(tmp_path, folder):
     try:

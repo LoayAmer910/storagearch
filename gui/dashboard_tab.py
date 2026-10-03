@@ -6,7 +6,7 @@ from gui.workers import run_in_background
 
 
 class DashboardTab(QWidget):
-    """8.1 - לוח ראשי: נתוני שימוש אמיתיים מתוך מסד הנתונים, ללא ערכים קבועים מראש."""
+    """The Dashboard tab: real usage figures read from the database, nothing hard-coded."""
 
     def __init__(self, main_window):
         super().__init__()

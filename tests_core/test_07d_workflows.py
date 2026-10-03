@@ -379,6 +379,7 @@ def test_bad_requests_get_a_reason(app, args, reason):
 
 
 def test_empty_files_empty_folders_and_unicode_names(app):
+    # Hebrew on purpose: non-ASCII, right-to-left names must archive and restore exactly
     empty = app / "ריק.txt"
     empty.write_bytes(b"")
     assert api.archive_file_result(str(empty), "מסמכים")["success"]

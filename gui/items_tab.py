@@ -28,12 +28,12 @@ ITEM_ID_ROLE = Qt.UserRole
 
 
 def _in_use_message(path):
-    return (f"הקובץ '{os.path.basename(path)}' פתוח בתוכנה אחרת או שאין הרשאה לקרוא אותו.\n"
-            f"סגור אותו ונסה שוב.\n\n{path}")
+    return (f"'{os.path.basename(path)}' is open in another program, or you do not have permission to read it.\n"
+            f"Close it and try again.\n\n{path}")
 
 
 class ItemsTab(QWidget):
-    """8.3 / 8.4 - חיפוש, ארכוב, שליפה, החזרה ובדיקת תקינות ברמת פריט."""
+    """The Items tab: search, archive, check out, check in and verify items."""
 
     def __init__(self, main_window):
         super().__init__()
@@ -215,7 +215,7 @@ class ItemsTab(QWidget):
         # OSError deep in the duplicate-check/archive phase.
         is_valid, _reason = archive_manager.validate_source_path(path)
         if not is_valid:
-            QMessageBox.warning(self, "Add item", "שם תיקייה לא חוקי או נתיב לא קיים")
+            QMessageBox.warning(self, "Add item", "The name is not valid, or the path does not exist.")
             return
 
         self.main_window.set_busy(True, "Checking for duplicate content...")
@@ -228,14 +228,14 @@ class ItemsTab(QWidget):
                 )
             except archive_manager.CloudPlaceholderError as exc:
                 return {
-                    "error": "אחד הקבצים נמצא בענן (OneDrive) ולא הורד למחשב זה.\n"
-                             "יש להוריד אותו (קליק ימני על הקובץ ב-OneDrive → \"תמיד שמור במכשיר זה\") ולנסות שוב.\n\n"
+                    "error": "A file is in OneDrive and is not downloaded to this PC.\n"
+                             "Download it (right-click it in OneDrive → \"Always keep on this device\") and try again.\n\n"
                              f"{exc}"
                 }
             except archive_manager.SourceInUseError as exc:
                 return {"error": _in_use_message(exc.path)}
             except archive_manager.InvalidPathError as exc:
-                return {"error": f"לא ניתן לקרוא את המקור:\n{exc}"}
+                return {"error": f"Cannot read the source:\n{exc}"}
             except OSError as exc:
                 return {"error": f"Unable to read source content: {exc}"}
             if content_hash is None:
@@ -308,9 +308,9 @@ class ItemsTab(QWidget):
         if skipped_cloud_files:
             skipped_names = "\n".join(f"  - {os.path.basename(p)}" for p in skipped_cloud_files)
             skipped_line = (
-                f"\n\n{len(skipped_cloud_files)} קובץ/ים דולגו כי הם קבצי ענן (OneDrive) שלא הורדו למכשיר:\n"
+                f"\n\n{len(skipped_cloud_files)} file(s) were skipped because they are in OneDrive and not downloaded to this PC:\n"
                 f"{skipped_names}\n"
-                "יש להוריד אותם (קליק ימני -> \"תמיד שמור במכשיר זה\") ולהוסיף שוב אם רוצים לכלול אותם."
+                "To include them, download them (right-click -> \"Always keep on this device\") and add them again."
             )
         if "original_size" in result:
             smart_line = ""

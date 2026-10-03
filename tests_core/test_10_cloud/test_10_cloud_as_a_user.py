@@ -71,6 +71,7 @@ def test_nothing_leaves_the_machine_before_the_user_opts_in(cloud_app, worker):
     assert [r for r in worker.requests if r["path"] != "/api/v1/config"] == [], worker.requests
 
 
+# Hebrew on purpose: non-ASCII input must be refused cleanly, not crash
 BAD_CODES = [None, "", "   ", 12345, "wrong-code", "x" * 100_000, "קוד שגוי", "\x00\n"]
 
 

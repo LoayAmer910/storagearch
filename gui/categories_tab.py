@@ -20,7 +20,7 @@ CATEGORY_ID_ROLE = Qt.UserRole
 
 
 class CategoriesTab(QWidget):
-    """8.2 - מסך קטגוריות: צפייה, יצירה, עריכה, מחיקה, פתיחת רשימת הפריטים."""
+    """The Categories tab: view, create, edit and delete categories, and open a category's items."""
 
     def __init__(self, main_window):
         super().__init__()
