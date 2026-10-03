@@ -1,6 +1,7 @@
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
 
 from core import api as main
+from gui import gc_guard
 from gui import settings as settings_module
 from gui.categories_tab import CategoriesTab
 from gui.dashboard_tab import DashboardTab
@@ -12,6 +13,7 @@ from gui.settings_tab import SettingsTab
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        gc_guard.install(QApplication.instance())  # garbage (Qt objects too) is freed only on this thread
         self.setWindowTitle("StorageArch")
         self.resize(1000, 640)
 

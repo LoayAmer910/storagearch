@@ -9,7 +9,8 @@ from core import api, config
 GUI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "gui")
 BOUND = {"main": api, "archive_manager": api, "storage_config": config}
 ALLOWED_ROOTS = {"core", "gui", "PySide6", "os", "sys", "json", "threading", "time", "traceback", "functools", "queue",
-                 "logging", "datetime", "pathlib", "shiboken6", "collections", "typing", "dataclasses", "multiprocessing"}
+                 "logging", "datetime", "pathlib", "shiboken6", "collections", "typing", "dataclasses", "multiprocessing",
+                 "gc"}
 
 
 def _gui_sources():
