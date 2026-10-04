@@ -155,3 +155,13 @@ class Compressing(Fake):
         with open(stored_path, "rb") as s, open(out, "wb") as d:
             d.write(lzma.decompress(s.read()))
         return out
+
+
+def worker_that_dies_at_startup(conn):
+    """A worker process entry point that ends before saying it is ready (like a worker whose imports fail)."""
+    conn.close()
+
+
+def worker_that_never_says_ready(conn):
+    """A worker process entry point that stays alive but never says it is ready (a worker stuck while starting)."""
+    time.sleep(60)

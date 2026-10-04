@@ -51,7 +51,11 @@ class _Worker:
             if not self.process.is_alive() or time.monotonic() > deadline:
                 self.kill()
                 raise RuntimeError("worker process did not start")
-        message = self.conn.recv()
+        try:
+            message = self.conn.recv()
+        except (EOFError, OSError):  # the process ended before it said it was ready (its pipe closed)
+            self.kill()
+            raise RuntimeError("worker process ended before it was ready") from None
         if message[0] != "ready":
             self.kill()
             raise RuntimeError("worker process sent an unexpected greeting")

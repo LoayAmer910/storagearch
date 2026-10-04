@@ -46,8 +46,24 @@ def test_a_closed_pool_takes_no_more_work(pool, src, tmp_path):
     assert result == {"status": candidate.CRASHED, "detail": "no worker process could be started"}
 
 
-def test_a_worker_that_does_not_start_in_time_is_reported_and_not_kept(pool, src, tmp_path, monkeypatch):
-    monkeypatch.setattr(workers, "READY_TIMEOUT_S", -1)  # the deadline has passed before the worker is ready
+def _workers_start_with(monkeypatch, entry_point):
+    """Every new worker process runs `entry_point` instead of the real worker loop (it must be importable)."""
+    real = workers._CTX.Process
+    monkeypatch.setattr(workers._CTX, "Process",
+                        lambda target, args, daemon: real(target=entry_point, args=args, daemon=daemon))
+
+
+def test_a_worker_that_dies_while_starting_is_reported_as_crashed(pool, src, tmp_path, monkeypatch):
+    # e.g. its imports fail, or an antivirus stops the new process: its pipe closes before it says it is ready
+    _workers_start_with(monkeypatch, fakes.worker_that_dies_at_startup)
+    result = pool.run(fakes.Fake(), src, str(tmp_path), "sha", 5)
+    assert result == {"status": candidate.CRASHED, "detail": "no worker process could be started"}
+    assert pool.live_pids() == set() and live_children() == []
+
+
+def test_a_worker_that_does_not_start_in_time_is_killed_and_reported(pool, src, tmp_path, monkeypatch):
+    _workers_start_with(monkeypatch, fakes.worker_that_never_says_ready)
+    monkeypatch.setattr(workers, "READY_TIMEOUT_S", 1.0)
     result = pool.run(fakes.Fake(), src, str(tmp_path), "sha", 5)
     assert result["status"] == candidate.CRASHED
     assert pool.live_pids() == set() and live_children() == []
@@ -77,25 +93,16 @@ def test_a_worker_that_finishes_starting_after_the_pool_closed_is_stopped(pool, 
     assert wait_dead(started[0].pid) and pool.live_pids() == set()
 
 
-def test_closing_the_pool_while_a_task_runs_kills_the_busy_worker(pool, src, tmp_path):
+def test_closing_the_pool_kills_a_worker_that_is_still_busy(pool, src, tmp_path):
+    # The app closes the pool only after every task has returned; a worker busy at that point (a task nobody
+    # waits for any more) does not answer the polite stop and is killed with everything it started.
+    worker = pool._take()
     marker = str(tmp_path / "running")
-    outcome = {}
-
-    def run():
-        try:
-            outcome["result"] = pool.run(fakes.Hanging(name="h", marker=marker), src, str(tmp_path), "sha", 60)
-        except Exception as exc:  # noqa: BLE001 - recorded so the test can show it
-            outcome["raised"] = exc
-
-    thread = threading.Thread(target=run)
-    thread.start()
+    worker.conn.send((1, "candidate", (fakes.Hanging(name="h", marker=marker), src, str(tmp_path), "sha", 60)))
     busy_pid = pid_from(marker)
     pool.close()
-    thread.join(30)
-    assert wait_dead(busy_pid)
-    assert "raised" not in outcome, f"run() raised instead of reporting: {outcome.get('raised')!r}"
-    assert outcome["result"]["status"] == candidate.CRASHED
-
+    assert wait_dead(busy_pid) and wait_dead(worker.pid)
+    assert pool.live_pids() == set()
 
 
 def test_closing_after_a_worker_was_killed_from_outside_does_not_fail(pool, src, tmp_path):
@@ -105,6 +112,7 @@ def test_closing_after_a_worker_was_killed_from_outside_does_not_fail(pool, src,
     assert wait_dead(pid)
     pool.close()
     assert pool.live_pids() == set()
+
 
 # --- the loop inside a worker process (run here in a thread, with a real pipe) ---------------------------
 

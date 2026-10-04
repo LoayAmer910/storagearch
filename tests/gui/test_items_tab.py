@@ -3,6 +3,7 @@ import ctypes
 import os
 import stat
 import zipfile
+from ctypes import wintypes
 
 import pytest
 
@@ -28,6 +29,12 @@ from support.gui import (
 
 
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+# Declared, not guessed: a failed open returns INVALID_HANDLE_VALUE, which ctypes reports as -1 when it
+# assumes an int return - and -1 never equals HANDLE(-1).value, so a failed open looked like a held file.
+_kernel32.CreateFileW.restype = wintypes.HANDLE
+_kernel32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                  wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+_kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
 
 
 def long_path(path):
