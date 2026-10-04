@@ -40,6 +40,33 @@ against ZIP: BMP -55.8 %, JavaScript -31.8 %, Python extension modules -30.3 %, 
 JSON/XML -17.2 %. No file was stored larger than its ZIP baseline, and every restore was identical to the
 original.
 
+Two more folders of about 1 GB each, against ZIP, 7z and RAR (all at their normal setting, same machine,
+warm disk cache). After archiving, StorageArch restored every file and each one matched the original byte
+for byte.
+
+**Files only** - programs and libraries, Python code, logs, CSV/JSON/XML, a database (1,075 MB, 6,348 files):
+
+| | Size | Saved | Time |
+|---|---:|---:|---:|
+| ZIP (7-Zip) | 322 MB | 70.0 % | 22 s |
+| RAR (WinRAR) | 287 MB | 73.3 % | 97 s |
+| **StorageArch** | **281 MB** | **73.9 %** | 258 s |
+| 7z (7-Zip) | 235 MB | 78.2 % | 237 s |
+
+**Mixed** - about half photos (JPEG, PNG, BMP), the rest programs, code, logs and data (1,074 MB, 4,758 files):
+
+| | Size | Saved | Time |
+|---|---:|---:|---:|
+| ZIP (7-Zip) | 601 MB | 44.1 % | 30 s |
+| RAR (WinRAR) | 580 MB | 46.0 % | 84 s |
+| 7z (7-Zip) | 540 MB | 49.8 % | 262 s |
+| **StorageArch** | **490 MB** | **54.3 %** | 369 s |
+
+On the mixed folder StorageArch is the smallest of all: JPEG and BMP files are stored losslessly as JPEG XL,
+which ZIP, 7z and RAR barely compress. On files alone 7z is smaller, because it compresses everything as one
+solid block - so a single file cannot be taken out quickly, and the result is not a standard ZIP. The price of
+StorageArch is time: every candidate is restored and compared with the original before it is kept.
+
 ## The optional cloud part
 
 The app works fully offline. The cloud client is optional and off by default: it lets the compression rules be
