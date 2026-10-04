@@ -1,4 +1,5 @@
 """core.api - initialize, the data and workspace locations, protected and invalid paths."""
+import contextlib
 import json
 import os
 import zipfile
@@ -33,7 +34,7 @@ def test_switching_to_a_folder_with_an_old_version_database_is_refused_safely(ap
     import sqlite3
     old = app / "OldData"
     old.mkdir()
-    with sqlite3.connect(old / "smartarchive.db") as db:
+    with contextlib.closing(sqlite3.connect(old / "smartarchive.db")) as db:
         db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, file_name TEXT)")
     before = read(old / "smartarchive.db")
     api.create_category("Keep")

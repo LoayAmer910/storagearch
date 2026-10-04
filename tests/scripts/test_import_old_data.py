@@ -197,6 +197,7 @@ def old(tmp_path):
 def new_home(tmp_path, monkeypatch):
     home = tmp_path / "new"
     home.mkdir()
+    monkeypatch.chdir(home)  # the importer changes into it; this puts the old working folder back afterwards
     return str(home)
 
 
@@ -275,7 +276,8 @@ def test_the_command_line_writes_a_report_and_explains_its_use(old, new_home, ca
     import_old_data.main(["import_old_data.py", old.write(), new_home])
     out = capsys.readouterr().out
     assert out.startswith("imported 1, duplicates 0, damaged 0; report: ")
-    report = json.load(open(os.path.join(api.data_root(), "logs", "import_report.json"), encoding="utf-8"))
+    with open(os.path.join(api.data_root(), "logs", "import_report.json"), encoding="utf-8") as f:
+        report = json.load(f)
     assert [i["name"] for i in report["imported"]] == ["a.txt"]
     with pytest.raises(SystemExit):
         import_old_data.main(["import_old_data.py"])

@@ -1,4 +1,5 @@
 """The eight rules (I1-I8) the whole system keeps, checked through the API on the whole corpus."""
+import contextlib
 import io
 import os
 import shutil
@@ -58,8 +59,15 @@ FAULTS = [fakes.Raising(name="raises"), fakes.Crashing(name="crashes"), fakes.Ha
           fakes.WrongRestore(name="wrong"), fakes.MissingOutput(name="missing")]
 
 
+@contextlib.contextmanager
 def _db():
-    return sqlite3.connect(config.db_path())
+    """The catalog, opened directly: commits on success like `with connection`, and is always closed."""
+    db = sqlite3.connect(config.db_path())
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
 
 
 class _FakeCloudModule:

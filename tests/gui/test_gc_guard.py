@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QApplication
 from gui.workers import run_in_background
 
 
-def test_with_the_gui_open_garbage_is_collected_only_on_the_gui_thread(qtbot):
+def test_with_the_gui_open_garbage_is_collected_only_on_the_gui_thread(qtbot, sandbox):
     """The collector freed Qt objects (left by closed windows) on a worker thread, which killed the
     process with an access violation in the middle of a checkout. With a MainWindow open, automatic
     collection is off and the GUI thread collects - so a worker that makes plenty of garbage never does."""

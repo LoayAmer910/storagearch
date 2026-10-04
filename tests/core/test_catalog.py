@@ -3,6 +3,7 @@ or not at all; a sealed archive always has its file hash; the members digest fol
 only; a database from the old version is refused and left untouched; search treats % and _ literally;
 the row shapes the GUI reads are unchanged; concurrent writers do not lose rows."""
 import concurrent.futures
+import contextlib
 import hashlib
 import sqlite3
 
@@ -39,16 +40,18 @@ def _archive(cat, name="Docs"):
 
 def test_schema_version_and_reopen(tmp_path, cat):
     Catalog(cat.db_path)
-    with sqlite3.connect(cat.db_path) as db:
+    with contextlib.closing(sqlite3.connect(cat.db_path)) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == catalog.SCHEMA_VERSION
 
 
 def test_an_old_version_database_is_refused_and_not_modified(tmp_path):
     path = tmp_path / "old.db"
-    with sqlite3.connect(path) as db:
-        db.execute("CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT)")
-        db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, file_name TEXT)")
-        db.execute("INSERT INTO items (file_name) VALUES ('precious.txt')")
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT)")
+    db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, file_name TEXT)")
+    db.execute("INSERT INTO items (file_name) VALUES ('precious.txt')")
+    db.commit()
+    db.close()
     before = path.read_bytes()
     with pytest.raises(LegacyDatabaseError):
         Catalog(str(path))
@@ -70,7 +73,7 @@ def test_databases_under_unusual_folder_names_open_and_reopen(tmp_path, folder):
 
 def test_a_newer_schema_is_refused(tmp_path):
     path = tmp_path / "new.db"
-    with sqlite3.connect(path) as db:
+    with contextlib.closing(sqlite3.connect(path)) as db:
         db.execute("PRAGMA user_version = 99")
     with pytest.raises(LegacyDatabaseError):
         Catalog(str(path))

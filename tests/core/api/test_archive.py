@@ -1,5 +1,6 @@
 """core.api - archiving files and folders: results and reasons, duplicates, splitting, lookups."""
 import concurrent.futures
+import contextlib
 import ctypes
 import os
 import shutil
@@ -82,7 +83,8 @@ def test_a_duplicate_of_a_damaged_archive_is_refused(app):
     zip_path = api.list_archives()[0][3]
     data = bytearray(read(zip_path))
     data[len(data) // 3] ^= 0xFF
-    open(zip_path, "wb").write(bytes(data))
+    with open(zip_path, "wb") as f:
+        f.write(bytes(data))
     result = api.archive_file_result(src, "Docs")
     assert not result["success"] and result["reason"] == "DUPLICATE_UNTRUSTED"
 
@@ -93,7 +95,7 @@ def test_archives_split_at_the_size_limit_and_full_ones_are_sealed(app):
         assert api.archive_file_result(write_lines_file(app, f"f{i}.bin", 2500, seed=i), "Small")["success"]
     archives = _archives()
     assert len(archives) >= 2
-    with __import__("sqlite3").connect(config.db_path()) as db:
+    with contextlib.closing(sqlite3.connect(config.db_path())) as db:
         sealed = db.execute("SELECT file_path, zip_hash FROM archives WHERE state = 'sealed'").fetchall()
     assert sealed and all(h and api.calculate_file_hash(p) == h for p, h in sealed)
     assert set(api.verify_category("Small").values()) == {"VERIFIED"}

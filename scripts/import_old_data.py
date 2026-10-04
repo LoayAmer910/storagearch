@@ -12,6 +12,7 @@ and only then archived by the new core into a category of the same name. An item
 its recorded hash - or uses a format that cannot be decoded here - is reported as damaged and skipped; the
 rest continue. A JSON report lists what was imported and what was not.
 """
+import contextlib
 import hashlib
 import json
 import lzma
@@ -180,7 +181,7 @@ def import_old(old_root, target_dir=None):
         raise SystemExit("the new data folder must not be inside the old one (or the other way round)")
 
     report = {"imported": [], "duplicates": [], "damaged": [], "checked_out_at_import": []}
-    with _open_read_only(db_path) as db:
+    with contextlib.closing(_open_read_only(db_path)) as db:  # `with` on a connection alone does not close it
         categories = db.execute("SELECT id, name, description, color, max_archive_size FROM categories").fetchall()
         for _cid, name, description, color, max_size in categories:
             api.create_category(name, description, color, max_size)
@@ -201,7 +202,11 @@ def import_old(old_root, target_dir=None):
             if zip_path is None:
                 raise NotImportable("its archive file is missing")
             target = _rebuild(zip_path, kind, name, member_path, work)
-            got = _old_folder_hash(target) if kind == "folder" else hashlib.sha256(open(target, "rb").read()).hexdigest()
+            if kind == "folder":
+                got = _old_folder_hash(target)
+            else:
+                with open(target, "rb") as f:
+                    got = hashlib.sha256(f.read()).hexdigest()
             if got != expected:
                 raise NotImportable("rebuilt content does not match the hash the old catalog recorded")
             result = (api.archive_folder_result if kind == "folder" else api.archive_file_result)(target, category)
