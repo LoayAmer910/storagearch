@@ -40,6 +40,13 @@ against ZIP: BMP -55.8 %, JavaScript -31.8 %, Python extension modules -30.3 %, 
 JSON/XML -17.2 %. No file was stored larger than its ZIP baseline, and every restore was identical to the
 original.
 
+## The optional cloud part
+
+The app works fully offline. The cloud client is optional and off by default: it lets the compression rules be
+improved from anonymous usage statistics (which method won for each file type, and by how much), and lets a
+compression method found to be faulty be switched off remotely through a signed setting - it can only remove a
+method, never add one - without shipping a new release. File names, paths and file contents are never sent.
+
 ## Requirements
 
 - Windows, Python 3.14+
@@ -64,6 +71,15 @@ The single-file app is written to `dist/StorageArch.exe`; the JPEG XL tools are 
 
     python -m pytest tests/test_smoke.py
     python -m pytest
+
+The tests are built in six layers, each catching a different kind of failure:
+
+1. **Smoke** - runs first, in a second: the right code is loaded and nothing depends on the previous version.
+2. **Module by module** - every module of the core, the window and the cloud client, error paths included.
+3. **The eight rules** - each design rule (I1-I8) checked directly through the core's API.
+4. **Fault injection** - compressors that crash, hang or return wrong bytes; disks and databases that fail.
+5. **User journeys** - the real window, mistakes included, checking after every step that nothing was lost.
+6. **Against the previous version** - the same real files through both versions, and importing old data.
 
 All tests live in `tests/`, one file per source module, in folders that mirror the code:
 
