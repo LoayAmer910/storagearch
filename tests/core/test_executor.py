@@ -33,11 +33,14 @@ def test_a_good_candidate_is_verified_and_kept_inside_the_scope(in_process, src,
     assert not os.path.exists(root)
 
 
-@pytest.mark.parametrize("fault", FAULTS)
-@pytest.mark.parametrize("in_process", [True, False], ids=["thread", "worker"])
+# Only a worker can survive a crash or be killed, so the executor never runs those two in-process.
+FAULT_CASES = [(fault, in_process) for fault in FAULTS for in_process in (True, False)
+               if not (in_process and fault in ("crashes", "hangs"))]
+
+
+@pytest.mark.parametrize("fault, in_process", FAULT_CASES,
+                         ids=[f"{f}-{'thread' if p else 'worker'}" for f, p in FAULT_CASES])
 def test_a_failing_candidate_becomes_a_status_and_leaves_nothing(fault, in_process, src, info, tmp_path):
-    if in_process and fault in ("crashes", "hangs"):
-        pytest.skip("only a worker can survive a crash or be killed; the executor never runs these in-process")
     cls, expected = FAULTS[fault]
     marker = str(tmp_path / "ran")
     with OperationScope(temp_root=str(tmp_path / "t")) as scope:

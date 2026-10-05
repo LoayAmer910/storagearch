@@ -1,52 +1,23 @@
-"""scripts/import_old_data.py - importing the old version's data. The old engine (run in its own process, as the packaged app
-ran it) archives the corpus; the importer rebuilds every item without the old code, checks it against the
-old catalog's hash and archives it with the new core. Every item then restores from the new core exactly
-as the original; a damaged old item is reported and skipped while the rest import; the old data is never
-modified."""
+"""scripts/import_old_data.py - importing the old version's data. The tests build data in the old format themselves
+(an old catalog and its ZIP archives, in every old codec), without the old code: every item then restores from the
+new core exactly as the original; a damaged old item is reported and skipped while the rest import; the old data is
+never modified."""
 import hashlib
 import json
+import lzma
 import os
-import shutil
-import subprocess
-import sys
+import sqlite3
 import zipfile
+import zlib
+from compression import zstd
 
+import brotli
 import pytest
 
-from core import api, config
+from core import api, tools
 from scripts import import_old_data
 from support import corpus
-from support.api import read, tree
-
-# The old version is not part of this repository: point STORAGEARCH_OLD_ENGINE_DIR at a checkout of it (the
-# folder that holds its beta9_src) to run the tests marked needs_old_engine; without it they are skipped. The other
-# tests build data in the old format themselves and always run.
-OLD_ENGINE = os.environ.get("STORAGEARCH_OLD_ENGINE_DIR")
-needs_old_engine = pytest.mark.skipif(not (OLD_ENGINE and os.path.isdir(os.path.join(OLD_ENGINE, "beta9_src"))),
-                                reason="set STORAGEARCH_OLD_ENGINE_DIR to a checkout of the old version")
-
-
-_OLD = r'''
-import os, sys, json
-repo, data_dir, files, folder = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), sys.argv[4]
-b9 = os.path.join(repo, "beta9_src")
-for p in (os.path.join(b9, "experiments", "images", "src"), os.path.join(b9, "experiments", "smart_selector", "src"),
-          os.path.join(b9, "experiments", "video", "src"), os.path.join(b9, "experiments", "text_filters", "src"), b9):
-    sys.path.insert(0, p)
-os.makedirs(data_dir, exist_ok=True)
-os.chdir(data_dir)
-import main
-from concurrency_overlay.integration_layer import activate_beta12
-activate_beta12()
-main.initialize()
-main.create_category("Old Docs", "from the old version", "#123456", 50_000_000)
-used = {}
-for path in files:
-    r = main.archive_file_result(path, "Old Docs")
-    used[os.path.basename(path)] = r.get("strategy")
-r = main.archive_folder_result(folder, "Old Docs")
-print(json.dumps({"files": used, "folder": r.get("success")}))
-'''
+from support.api import read
 
 
 def _snapshot(root):
@@ -57,76 +28,6 @@ def _snapshot(root):
             out[os.path.relpath(p, root)] = hashlib.sha256(read(p)).hexdigest()
     return out
 
-
-@pytest.fixture(scope="module")
-def old_installation(tmp_path_factory):
-    root = tmp_path_factory.mktemp("old")
-    samples = corpus.build(str(root / "sources"))
-    files = [s.path for s in samples.values() if s.name not in ("empty.txt",)]
-    folder = root / "sources_folder"
-    shutil.copytree(root / "sources", folder)
-    done = subprocess.run([sys.executable, "-c", _OLD, OLD_ENGINE, str(root / "oldhome"), json.dumps(files), str(folder)],
-                          capture_output=True, text=True, env=dict(os.environ))
-    assert done.returncode == 0, done.stderr[-3000:]
-    used = json.loads(done.stdout.strip().splitlines()[-1])
-    return {"root": root, "data": root / "oldhome" / "SmartArchiveData", "files": files, "folder": str(folder),
-            "strategies": set(used["files"].values())}
-
-
-@needs_old_engine
-def test_everything_the_old_version_stored_comes_back_from_the_new_core(old_installation, tmp_path, monkeypatch):
-    before = _snapshot(old_installation["data"])
-    assert len(old_installation["strategies"] - {"baseline_storagearch_zip", None}) >= 3, old_installation["strategies"]
-    report = import_old_data.import_old(str(old_installation["data"]), str(tmp_path / "newhome"))
-    assert report["damaged"] == [], report["damaged"]
-    assert _snapshot(old_installation["data"]) == before, "the importer modified the old data"
-    assert {c[1] for c in api.list_categories()} == {"Old Docs"}
-    assert api.list_categories()[0][2:5] == ("from the old version", "#123456", 50_000_000)
-    for i, path in enumerate(old_installation["files"]):
-        name = os.path.basename(path)
-        item = next(r for r in api.search(name) if r[1] == name and r[2] == "file")
-        restored = api.checkout(item[0], destination=str(tmp_path / f"o{i}"))
-        assert read(restored) == read(path), name
-    folder_name = os.path.basename(old_installation["folder"])
-    item = next(r for r in api.search(folder_name) if r[2] == "folder")
-    assert tree(api.checkout(item[0], destination=str(tmp_path / "of"))) == tree(old_installation["folder"])
-
-
-@needs_old_engine
-def test_a_damaged_old_item_is_reported_and_the_rest_import(old_installation, tmp_path):
-    copy = tmp_path / "old_copy"
-    shutil.copytree(old_installation["data"], copy)
-    zip_path = next(os.path.join(d, f) for d, _s, fs in os.walk(copy / "archives") for f in fs if f.endswith(".zip"))
-    with zipfile.ZipFile(zip_path) as z:
-        victim = max((i for i in z.infolist() if not i.is_dir()), key=lambda i: i.compress_size)
-    data = bytearray(read(zip_path))
-    at = victim.header_offset + 30 + len(victim.filename.encode()) + len(victim.extra) + victim.compress_size // 2
-    data[at] ^= 0xFF
-    open(zip_path, "wb").write(bytes(data))
-    report = import_old_data.import_old(str(copy), str(tmp_path / "newhome"))
-    assert len(report["damaged"]) >= 1
-    assert len(report["imported"]) + len(report["duplicates"]) >= len(old_installation["files"]) - 1
-    assert set(api.verify_all()["Old Docs"].values()) == {"VERIFIED"}
-
-
-@needs_old_engine
-def test_the_new_data_may_not_live_inside_the_old(old_installation, tmp_path):
-    copy = tmp_path / "old_copy"
-    shutil.copytree(old_installation["data"], copy)
-    target = copy / "inside"
-    target.mkdir()
-    (target / config.CONFIG_FILE).write_text(json.dumps({"data_root": str(copy / "nested_new")}), encoding="utf-8")
-    with pytest.raises(SystemExit):
-        import_old_data.import_old(str(copy), str(target))
-
-
-# --- old-format data built here, without the old version: these always run ------------------------------
-
-import brotli  # noqa: E402
-import lzma  # noqa: E402
-import sqlite3  # noqa: E402
-import zlib  # noqa: E402
-from compression import zstd  # noqa: E402
 
 _X86 = [{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2, "preset": 9}]
 OLD_ENCODERS = {
@@ -304,8 +205,6 @@ def test_the_new_data_may_not_be_inside_the_old_folder(old):
 
 
 # --- the old image formats need the JPEG XL tools --------------------------------------------------------
-
-from core import tools  # noqa: E402
 
 needs_jxl = pytest.mark.skipif(not tools.available("cjxl", "djxl")[0], reason="cjxl/djxl not found")
 
