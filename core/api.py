@@ -31,6 +31,7 @@ DEFAULT_MAX_ARCHIVE_SIZE = catalog_module.DEFAULT_MAX_ARCHIVE_SIZE
 COMPACT_DEAD_RATIO = 0.25
 _SPACE_MARGIN = 16 * 1024 * 1024
 _SOURCE_ACTIONS = ("keep", "recycle", "delete")
+_SAVE_ROUNDS = 3                    # a source that keeps changing is saved this often before it is left alone
 _write_lock = threading.RLock()     # archive files and catalog writes: one writer at a time
 _catalog = None
 _catalog_lock = threading.Lock()
@@ -393,21 +394,127 @@ def _new_pipeline(scope):
     return Pipeline(Executor(scope), route)
 
 
-def _apply_source_action(path, action):
-    if action == "keep" or _is_protected_source(path):
-        return action == "keep"
+def _state_of(path):
+    """What a quick look at a file or a folder shows: every entry in it with its kind, size and modification
+    time. It is taken before the content is read, so anything that changes afterwards makes it differ."""
+    def facts(p):
+        st = os.stat(p)
+        return st.st_size, st.st_mtime_ns
+    if not os.path.isdir(path):
+        return {"": ("file", *facts(path))}
+    entries, skipped = folders.scan(path)
+    state = {e.rel_path: (e.kind, *(facts(e.full_path) if e.kind == "file" else ())) for e in entries}
+    state.update({s.rel_path: (s.reason,) for s in skipped})
+    return state
+
+
+def _still(path, state):
     try:
-        if action == "recycle":
+        return _state_of(path) == state
+    except (OSError, InvalidPathError):
+        return False
+
+
+def _remove_if_still(path, state, recycle=False):
+    """Removes a file or a folder only while it still is what `state` describes. Returns "removed", "changed"
+    or "failed". A permanent delete first moves it aside under another name - from then on nothing can be
+    added to it by its path - and looks at it once more; whatever is not deleted gets its name back."""
+    if not _still(path, state):
+        return "changed"
+    aside = None
+    try:
+        if recycle:
             from send2trash import send2trash
             send2trash(path)
-        elif os.path.isdir(path):
-            shutil.rmtree(path)
+            return "removed"
+        aside = _move_aside(path)
+        if aside and not _still(aside, state):
+            return "changed"
+        target = aside or path
+        if os.path.isdir(target):
+            shutil.rmtree(target)
         else:
-            os.remove(path)
-        return True
+            os.remove(target)
+        return "removed"
     except (OSError, ImportError) as exc:
-        log.warning("source action %s failed: %s", action, exc)
-        return False
+        log.warning("%s could not be removed: %s", path, exc)
+        return "failed"
+    finally:
+        if aside and os.path.lexists(aside):
+            try:
+                os.rename(aside, path)
+            except OSError as exc:
+                log.error("%s could not get its name back and was left as %s: %s", path, aside, exc)
+
+
+def _move_aside(path):
+    """The new path, or None when it cannot be moved (held open, name too long) - it is then removed in place."""
+    aside = f"{os.path.normpath(path)}.del-{Catalog.new_uid()[:6]}"
+    try:
+        os.rename(path, aside)
+    except OSError:
+        return None
+    return aside
+
+
+def _remove_once_saved(item_id, path, state, recycle=False, strict=False):
+    """`path` was saved as the item when it looked like `state`, and is now to be removed. Nothing is removed
+    unless a fresh look shows exactly what was saved: what was added or changed meanwhile is saved first, and
+    a source that still changes after _SAVE_ROUNDS saves stays where it is. Returns (outcome, stats) -
+    "removed", "failed" (it could not be removed) or "kept", and the sizes of the last extra save, if any."""
+    stats = None
+    for attempt in range(_SAVE_ROUNDS):
+        outcome = _remove_if_still(path, state, recycle)
+        if outcome != "changed":
+            return outcome, stats
+        if attempt == _SAVE_ROUNDS - 1:
+            break
+        try:
+            saved = _save_again(item_id, path, strict)
+        except Exception:  # noqa: BLE001 - the item keeps the version saved last and the source stays
+            log.exception("saving what changed in %s failed", path)
+            saved = None
+        if saved is None:
+            break
+        state, stats = saved[0], saved[1] or stats
+    return "kept", stats
+
+
+def _save_again(item_id, path, strict):
+    """Saves what `path` holds now as the item's content. Returns (the state that was saved, its sizes - None
+    when the item already holds this content), or None when it cannot be saved. `strict`: a folder with
+    entries that are skipped (links, cloud files) is not saved, as when it is archived."""
+    item = _cat().item_by_id(item_id)
+    state = _state_of(path)
+    if item[2] == "folder":
+        entries, skipped = folders.scan(path)
+        if skipped and strict:
+            return None
+        scanned = _scan_many(entries)
+        new_hash = _folder_digest(entries, scanned)
+    else:
+        entries, scanned = None, scan_file(path)
+        new_hash = scanned[0].sha256
+    if new_hash == item[8]:
+        return state, None
+    reason, stats = _store_new_version(item_id, path, entries, scanned, new_hash)
+    return None if reason else (state, stats)
+
+
+def _remove_source(result, item_id, path, state, action):
+    """Applies the source action to a source that was archived, and adds to the result what came of it."""
+    if _is_protected_source(path):
+        outcome, stats = "failed", None
+    else:
+        outcome, stats = _remove_once_saved(item_id, path, state, recycle=action == "recycle", strict=True)
+    if stats:
+        result.update(original_size=stats["original"], compressed_size=stats["stored"],
+                      savings=stats["original"] - stats["stored"])
+        result["message"] += "\nChanges made to the source while it was being archived were saved too."
+    if outcome == "failed":
+        result["message"] += " (the source could not be removed)"
+    elif outcome == "kept":
+        result["message"] += "\nThe source was kept because it was still changing while it was being archived."
 
 
 def _duplicate_result(row):
@@ -433,6 +540,7 @@ def archive_file(file_path, category_name, source_action="keep"):
 
 def _archive_file(file_path, category_name, source_action):
     try:
+        state = _state_of(file_path) if source_action != "keep" else None
         scanned = scan_file(file_path)
     except OSError as exc:
         raise _read_error(file_path, exc) from exc
@@ -454,14 +562,14 @@ def _archive_file(file_path, category_name, source_action):
                     "original_size": info.size, "compressed_size": records[0]["stored_size"],
                     "original_hash": info.sha256, "archive_hash": records[0]["stored_sha256"],
                     "strategy": decision.method if decision.smart else None, "uid": uid}
-            _cat().add_item(archive_id, item, records)
+            item_id = _cat().add_item(archive_id, item, records)
             _after_write(archive_id, zip_path, category)
     stored = records[0]["stored_size"]
     result = {"success": True, "reason": "OK", "message": "Archived and verified successfully",
               "original_size": info.size, "compressed_size": stored, "savings": info.size - stored,
               "smart_compression_used": decision.smart, "strategy": decision.method if decision.smart else BASELINE_NAME}
-    if source_action != "keep" and not _apply_source_action(file_path, source_action):
-        result["message"] += " (the source could not be removed)"
+    if source_action != "keep":
+        _remove_source(result, item_id, file_path, state, source_action)
     return result
 
 
@@ -541,6 +649,7 @@ def _records_digest(records):
 
 
 def _archive_folder(folder_path, category_name, source_action):
+    state = _state_of(folder_path) if source_action != "keep" else None
     entries, skipped = folders.scan(folder_path)
     scanned = _scan_many(entries)
     folder_hash = _folder_digest(entries, scanned)
@@ -564,7 +673,7 @@ def _archive_folder(folder_path, category_name, source_action):
             item = {"file_type": "folder", "file_name": root_name, "original_path": folder_path,
                     "path_in_archive": f"{uid}/{root_name}/", "original_size": original_size, "compressed_size": compressed,
                     "original_hash": folder_hash, "archive_hash": _records_digest(records), "strategy": None, "uid": uid}
-            _cat().add_item(archive_id, item, records)
+            item_id = _cat().add_item(archive_id, item, records)
             _after_write(archive_id, zip_path, category)
     by_path = {r["relative_path"]: r for r in records}
     file_results = [{
@@ -582,8 +691,8 @@ def _archive_folder(folder_path, category_name, source_action):
     if source_action != "keep":
         if skipped:
             result["message"] += "\nThe source was kept because not everything in it could be archived."
-        elif not _apply_source_action(folder_path, source_action):
-            result["message"] += " (the source could not be removed)"
+        else:
+            _remove_source(result, item_id, folder_path, state, source_action)
     return result
 
 
@@ -667,24 +776,45 @@ def _checkin(item_id, remove_workspace_copy):
         # back to it - otherwise it could neither be checked in nor checked out again. The caller tells the user.
         cat.set_item_status(item_id, "ARCHIVED")
         return True, "WORKSPACE_COPY_MISSING", None
-    is_folder = item[2] == "folder"
-    if is_folder:
-        entries, skipped = folders.scan(workspace)
+    removable = remove_workspace_copy and _is_removable_copy(workspace)
+    state = _state_of(workspace) if removable else None
+    if item[2] == "folder":
+        entries, _skipped = folders.scan(workspace)
         scanned = _scan_many(entries)
         new_hash = _folder_digest(entries, scanned)
     else:
-        scanned_file = scan_file(workspace)
-        new_hash = scanned_file[0].sha256
-
-    if new_hash == item[8]:
-        _remove_workspace_copy(workspace, remove_workspace_copy)
+        entries, scanned = None, scan_file(workspace)
+        new_hash = scanned[0].sha256
+    unchanged = new_hash == item[8]
+    stats = None
+    if not unchanged:
+        reason, stats = _store_new_version(item_id, workspace, entries, scanned, new_hash)
+        if reason:
+            return False, reason, None
+    if removable:
+        outcome, later = _remove_once_saved(item_id, workspace, state)
+        stats = later or stats
+        if outcome == "kept":
+            # still being written to: what was saved so far stays saved, and the copy stays checked out
+            cat.set_item_status(item_id, "CHECKED_OUT", workspace_path=workspace)
+            return False, "WORKSPACE_STILL_CHANGING", None
+        if outcome == "removed":
+            _remove_empty_parent(workspace)
+    if unchanged:
         cat.set_item_status(item_id, "ARCHIVED")
-        return True, None, None
+    return True, None, stats
 
+
+def _store_new_version(item_id, path, entries, scanned, new_hash):
+    """Replaces the item's content by what was scanned at `path` - a folder's `entries` and their scans, or
+    (entries None) one file's scan. Returns (reason, stats): the reason it was not stored, or None and the sizes."""
+    cat = _cat()
+    item = cat.item_by_id(item_id)
+    is_folder = entries is not None
     category = cat.category_by_id(cat.archive_by_id(item[1])[1])
     old_archive_id = item[1]
     uid = f"{cat.item_uid(item_id)}.{Catalog.new_uid()[:6]}"
-    root_name = paths.bare_name(os.path.basename(os.path.normpath(workspace)), fallback="folder" if is_folder else "item")
+    root_name = paths.bare_name(os.path.basename(os.path.normpath(path)), fallback="folder" if is_folder else "item")
     kept = {}
     with OperationScope("checkin", temp_root=config.temp_dir()) as scope:
         if is_folder:
@@ -693,17 +823,17 @@ def _checkin(item_id, remove_workspace_copy):
             decisions = _decide_many(scope, {e: s for e, s in scanned.items() if e not in kept})
             stored_total = sum(d.stored_size for d in decisions.values())
         else:
-            decision = _new_pipeline(scope).decide(workspace, scanned_file)
+            decision = _new_pipeline(scope).decide(path, scanned)
             stored_total = decision.stored_size
         if not _enough_space(stored_total):
-            return False, "INSUFFICIENT_SPACE", None
+            return "INSUFFICIENT_SPACE", None
         with _write_lock:
             archive_id, zip_path = _checkin_archive(old_archive_id, category, stored_total)
             if kept and archive_id != old_archive_id:
                 # the item moves to another archive (its own filled up): unchanged files are written there too
                 rest = _decide_many(scope, {e: scanned[e] for e in kept if e is not None and e.kind == "file"})
                 if not _enough_space(sum(d.stored_size for d in rest.values())):
-                    return False, "INSUFFICIENT_SPACE", None
+                    return "INSUFFICIENT_SPACE", None
                 decisions.update(rest)
                 kept = {}
             if is_folder:
@@ -711,7 +841,7 @@ def _checkin(item_id, remove_workspace_copy):
                 original = sum(d.info.size for d in decisions.values()) + sum(
                     m["original_size"] for m in kept.values() if m["kind"] == "file")
             else:
-                planned = [_planned_from_decision(decision, workspace, f"{uid}/{root_name}", root_name)]
+                planned = [_planned_from_decision(decision, path, f"{uid}/{root_name}", root_name)]
                 original = decision.info.size
             records = store.write_members(zip_path, planned)
             content = [*kept.values(), *records]
@@ -726,8 +856,7 @@ def _checkin(item_id, remove_workspace_copy):
             if archive_id != old_archive_id:
                 _refresh_old_archive(old_archive_id, category)
             _compact_if_worth_it(old_archive_id, category)
-    _remove_workspace_copy(workspace, remove_workspace_copy)
-    return True, None, {"original": original, "stored": stored}
+    return None, {"original": original, "stored": stored}
 
 
 def _checkin_archive(old_archive_id, category, incoming):
@@ -765,16 +894,14 @@ def _compact_if_worth_it(archive_id, category):
     _refresh_old_archive(archive_id, category)
 
 
-def _remove_workspace_copy(workspace, remove):
-    """Removes a checked-out copy - only inside the workspace folder, never anywhere a tampered row points."""
-    if not remove or not paths.is_under(workspace, config.workspace_dir()) or paths.is_protected(workspace):
-        return
+def _is_removable_copy(workspace):
+    """A checked-out copy is removed only inside the workspace folder, never anywhere a tampered row points."""
+    return paths.is_under(workspace, config.workspace_dir()) and not paths.is_protected(workspace)
+
+
+def _remove_empty_parent(workspace):
+    parent = os.path.dirname(workspace)
     try:
-        if os.path.isdir(workspace):
-            shutil.rmtree(workspace)
-        else:
-            os.remove(workspace)
-        parent = os.path.dirname(workspace)
         if paths.is_under(parent, config.workspace_dir()) and os.path.normcase(parent) != os.path.normcase(config.workspace_dir()):
             os.rmdir(parent)
     except OSError:

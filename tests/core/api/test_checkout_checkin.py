@@ -408,3 +408,87 @@ def test_an_unexpected_failure_during_checkin_keeps_the_edited_copy(app, reporte
     assert api.checkin_result(item_id) == {"success": False, "reason": "RuntimeError"}
     assert open(ws, encoding="utf-8").read().endswith("work that must not be lost\n")
     assert api.get_item(item_id)[10] == "CHECKED_OUT"
+
+
+# --- a checked-out copy that changes while it is checked in is never removed with unsaved content -------
+
+def _after_every_write(monkeypatch, change):
+    """Runs change(n) right after the n-th write to an archive - the moment the copy looks saved."""
+    real, count = store.write_members, []
+
+    def write(zip_path, planned):
+        records = real(zip_path, planned)
+        count.append(1)
+        change(len(count))
+        return records
+    monkeypatch.setattr(store, "write_members", write)
+    return count
+
+
+def _checked_out_folder(app):
+    assert api.archive_folder_result(str(_folder_of(app, "proj")), "Docs")["success"]
+    item_id = item_id_by_name("proj")
+    return item_id, api.checkout(item_id)
+
+
+def test_a_file_added_while_a_folder_is_checked_in_is_saved_before_the_copy_is_removed(app, monkeypatch):
+    item_id, ws = _checked_out_folder(app)
+    write_lines_file(ws, "edited.txt", seed=50)
+    _after_every_write(monkeypatch, lambda n: n == 1 and write_lines_file(ws, "sub0/late.txt", seed=51))
+    assert api.checkin_result(item_id) == {"success": True, "reason": None}
+    assert not os.path.exists(ws) and api.get_item(item_id)[10] == "ARCHIVED"
+    back = tree(api.checkout(item_id, destination=str(app / "back")))
+    assert back["edited.txt"] and back["sub0/late.txt"]
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+
+
+def test_a_file_added_to_an_unchanged_copy_during_checkin_is_saved_too(app, monkeypatch):
+    item_id, ws = _checked_out_folder(app)
+    real, calls = api._scan_many, []
+
+    def scan_then_add(entries):
+        scanned = real(entries)
+        if not calls:
+            write_lines_file(ws, "late.txt", seed=52)
+        calls.append(1)
+        return scanned
+    monkeypatch.setattr(api, "_scan_many", scan_then_add)
+    assert api.checkin(item_id) and not os.path.exists(ws)
+    assert tree(api.checkout(item_id, destination=str(app / "back")))["late.txt"]
+
+
+def test_a_file_edited_right_after_its_checkin_was_written_is_saved_too(app, monkeypatch):
+    item_id = _archived(app)
+    ws = api.checkout(item_id)
+    with open(ws, "a", encoding="utf-8") as f:
+        f.write("first edit\n")
+
+    def edit(n):
+        if n == 1:
+            with open(ws, "ab") as f:
+                f.write(b"late edit\n")
+    _after_every_write(monkeypatch, edit)
+    assert api.checkin(item_id) and not os.path.exists(ws)
+    assert read(api.checkout(item_id, destination=str(app / "back"))).endswith(b"late edit\n")
+
+
+def test_a_copy_that_never_stops_changing_stays_checked_out_with_everything_in_it(app, reported, monkeypatch):
+    item_id, ws = _checked_out_folder(app)
+    write_lines_file(ws, "edited.txt", seed=50)
+    with monkeypatch.context() as busy:
+        _after_every_write(busy, lambda n: write_lines_file(ws, f"late{n}.txt", seed=60 + n))
+        assert api.checkin_result(item_id) == {"success": False, "reason": "WORKSPACE_STILL_CHANGING"}
+    assert api.get_item(item_id)[10] == "CHECKED_OUT" and os.path.normpath(api.get_item(item_id)[11]) == ws
+    expected = tree(ws)
+    assert {"edited.txt", "late1.txt", "late2.txt", "late3.txt"} <= set(expected)
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+    assert api.checkin(item_id) and not os.path.exists(ws)  # the other program stopped: this checkin takes it all
+    assert tree(api.checkout(item_id, destination=str(app / "back"))) == expected
+
+
+def test_a_calm_checkin_writes_once_and_leaves_nothing_behind(app, monkeypatch):
+    item_id, ws = _checked_out_folder(app)
+    write_lines_file(ws, "edited.txt", seed=50)
+    writes = _after_every_write(monkeypatch, lambda n: None)
+    assert api.checkin(item_id) and len(writes) == 1
+    assert not os.path.exists(os.path.dirname(ws))

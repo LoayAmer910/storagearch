@@ -359,3 +359,108 @@ def test_a_source_file_that_cannot_be_removed_is_reported_in_the_message(app, ma
         assert os.path.exists(path)
     finally:
         os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+
+
+# --- a source that changes while it is archived is never removed with unsaved content -------------------
+
+def _after_every_write(monkeypatch, change):
+    """Runs change(n) right after the n-th write to an archive - the moment the source looks saved."""
+    real, count = store.write_members, []
+
+    def write(zip_path, planned):
+        records = real(zip_path, planned)
+        count.append(1)
+        change(len(count))
+        return records
+    monkeypatch.setattr(store, "write_members", write)
+    return count
+
+
+def _restored(app, name):
+    return api.checkout(item_id_by_name(name), destination=str(app / "restored"))
+
+
+def _nothing_set_aside_next_to(path):
+    return [n for n in os.listdir(os.path.dirname(path)) if ".del-" in n] == []
+
+
+def test_a_file_added_to_a_folder_while_it_is_archived_is_saved_before_the_folder_is_deleted(app, monkeypatch):
+    folder = app / "work"
+    write_lines_file(folder, "a.txt", seed=1)
+    real = api._decide_many
+
+    def slow(scope, scanned):
+        if not (folder / "sub").exists():
+            write_lines_file(folder / "sub", "added.txt", seed=2)
+        return real(scope, scanned)
+    monkeypatch.setattr(api, "_decide_many", slow)
+    result = api.archive_folder_result(str(folder), "Docs", "delete")
+    assert result["success"] and not folder.exists() and _nothing_set_aside_next_to(str(folder))
+    saved = tree(_restored(app, "work"))
+    assert set(saved) == {"a.txt", "sub", "sub/added.txt"} and saved["sub/added.txt"]
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+
+
+def test_a_file_edited_right_after_its_folder_was_written_is_saved_before_the_folder_is_deleted(app, monkeypatch):
+    folder = app / "work"
+    write_lines_file(folder, "a.txt", seed=1)
+    write_lines_file(folder, "b.txt", seed=2)
+
+    def edit(n):
+        if n == 1:
+            with open(folder / "b.txt", "ab") as f:
+                f.write(b"late edit\n")
+    writes = _after_every_write(monkeypatch, edit)
+    result = api.archive_folder_result(str(folder), "Docs", "delete")
+    assert result["success"] and not folder.exists() and len(writes) == 2
+    assert tree(_restored(app, "work"))["b.txt"].endswith(b"late edit\n")
+    assert result["original_size"] == api.get_item(item_id_by_name("work"))[6]
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+
+
+def test_a_single_file_edited_right_after_it_was_written_is_saved_before_it_is_deleted(app, monkeypatch):
+    path = write_lines_file(app, "report.txt", seed=1)
+
+    def edit(n):
+        if n == 1:
+            with open(path, "ab") as f:
+                f.write(b"late edit\n")
+    _after_every_write(monkeypatch, edit)
+    assert api.archive_file_result(path, "Docs", "delete")["success"]
+    assert not os.path.exists(path) and _nothing_set_aside_next_to(path)
+    assert read(_restored(app, "report.txt")).endswith(b"late edit\n")
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+
+
+def test_a_folder_that_never_stops_changing_is_kept_and_nothing_in_it_is_lost(app, monkeypatch):
+    folder = app / "busy"
+    write_lines_file(folder, "a.txt", seed=1)
+    _after_every_write(monkeypatch, lambda n: write_lines_file(folder, f"late{n}.txt", seed=10 + n))
+    result = api.archive_folder_result(str(folder), "Docs", "delete")
+    assert result["success"] and "The source was kept" in result["message"]
+    on_disk = tree(folder)
+    assert {"a.txt", "late1.txt", "late2.txt", "late3.txt"} <= set(on_disk) and _nothing_set_aside_next_to(str(folder))
+    saved = tree(_restored(app, "busy"))
+    assert saved and all(on_disk[name] == data for name, data in saved.items())  # what was saved is real content
+    assert set(api.verify_category("Docs").values()) == {"VERIFIED"}
+
+
+def test_a_changed_folder_goes_to_the_recycle_bin_only_after_the_change_was_saved(app, monkeypatch):
+    folder = app / "work"
+    write_lines_file(folder, "a.txt", seed=1)
+    recycled = []
+    fake = type(sys)("send2trash")
+    fake.send2trash = lambda p: recycled.append((p, sorted(tree(p))))  # never the real Recycle Bin from a test
+    monkeypatch.setitem(sys.modules, "send2trash", fake)
+    _after_every_write(monkeypatch, lambda n: n == 1 and write_lines_file(folder, "added.txt", seed=2))
+    assert api.archive_folder_result(str(folder), "Docs", "recycle")["success"]
+    assert recycled == [(str(folder), ["a.txt", "added.txt"])]
+    assert set(tree(_restored(app, "work"))) == {"a.txt", "added.txt"}
+
+
+def test_a_calm_source_is_written_once(app, monkeypatch):
+    folder = app / "calm"
+    write_lines_file(folder, "a.txt", seed=1)
+    writes = _after_every_write(monkeypatch, lambda n: None)
+    assert api.archive_folder_result(str(folder), "Docs", "delete")["success"] and not folder.exists()
+    assert len(writes) == 1
