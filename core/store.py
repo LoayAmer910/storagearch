@@ -107,6 +107,7 @@ def write_members(zip_path, planned):
         with zipfile.ZipFile(partial, "w", allowZip64=True) as z:
             records = [_write_one(z, m) for m in planned]
         _read_back(partial, records)
+        _sync(partial)
         os.replace(partial, zip_path)
         return records
     except BaseException:
@@ -134,6 +135,7 @@ def _append(zip_path, planned):
         with zipfile.ZipFile(zip_path, "a", allowZip64=True) as z:
             records = [_write_one(z, m) for m in planned]
         _read_back(zip_path, records)
+        _sync(zip_path)  # the guard goes only once the new bytes are on the disk
     except BaseException:
         rollback(zip_path)
         raise
@@ -252,6 +254,13 @@ def _write_durably(path, data):
     with open(path, "wb") as f:
         f.write(data)
         f.flush()
+        os.fsync(f.fileno())
+
+
+def _sync(path):
+    """Has the file's bytes reach the disk. A file takes the place of another, or loses its guard, only
+    after this - otherwise a power cut right after could leave the new name with content that was never written."""
+    with open(path, "r+b") as f:
         os.fsync(f.fileno())
 
 
@@ -444,6 +453,7 @@ def compact(zip_path, members):
                 updated[m["path_in_archive"]] = {"stored_size": info.compress_size, "crc32": info.CRC}
         if verify_archive(temp, [{**m, **updated[m["path_in_archive"]]} for m in members]) != "VERIFIED":
             raise StoreError("the compacted archive did not verify")
+        _sync(temp)
         os.replace(temp, zip_path)
         return updated
     except BaseException:
@@ -464,5 +474,7 @@ def write_manifest(zip_path, category, members, digest, state, file_sha256=None)
     temp = manifest_path + ".tmp"
     with open(temp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(temp, manifest_path)
     return manifest_path

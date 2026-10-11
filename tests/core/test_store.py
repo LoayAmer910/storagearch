@@ -312,3 +312,62 @@ def test_a_compaction_that_does_not_verify_keeps_the_original_archive(samples, t
     with pytest.raises(StoreError, match="did not verify"):
         store.compact(zip_path, _catalog_rows(live))
     assert _sha(zip_path) == before and not os.path.exists(zip_path + ".compacting")
+
+
+def _watch_the_disk(monkeypatch):
+    """Records, for every file that takes another's place and for every guard that is removed, whether the
+    bytes it stands for had been synced to the disk at their full size first."""
+    synced, seen = {}, []
+    real_fsync, real_replace, real_remove = os.fsync, os.replace, os.remove
+
+    def identity(stat):
+        return stat.st_dev, stat.st_ino
+
+    def fsync(fd):
+        stat = os.fstat(fd)
+        synced[identity(stat)] = stat.st_size
+        return real_fsync(fd)
+
+    def is_synced(path):
+        stat = os.stat(path)
+        return synced.get(identity(stat)) == stat.st_size
+
+    def replace(src, dst):
+        seen.append((os.path.basename(dst), is_synced(src)))
+        return real_replace(src, dst)
+
+    def remove(path):
+        if str(path).endswith(".guard") and os.path.exists(path):
+            seen.append(("guard removed", is_synced(str(path)[: -len(".guard")])))
+        return real_remove(path)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(os, "remove", remove)
+    return seen
+
+
+def test_nothing_takes_its_final_name_before_its_bytes_are_on_the_disk(samples, tmp_path, monkeypatch):
+    seen = _watch_the_disk(monkeypatch)
+    zip_path = str(tmp_path / "Docs_001.zip")
+    dead = store.write_members(zip_path, [_baseline(samples["large_text.txt"].path, "old")])        # a new archive
+    live = store.write_members(zip_path, [_baseline(samples["text.csv"].path, "new")])              # an append
+    store.compact(zip_path, _catalog_rows(live))                                                    # a rewrite
+    store.write_manifest(zip_path, "Docs", _catalog_rows(live), "digest", "open")                   # the listing
+    assert dead and [name for name, _ok in seen] == ["Docs_001.zip", "guard removed", "Docs_001.zip", "Docs_001.manifest.json"]
+    assert all(ok for _name, ok in seen), seen
+
+
+def test_the_measured_baseline_is_the_size_that_is_written_for_every_kind_of_file(samples, tmp_path):
+    """Candidates are compared with a baseline that is only measured, never written. A Python or zlib whose
+    Deflate differs from what zipfile writes would make that comparison wrong, and nothing else would notice."""
+    deflated = 0
+    for i, name in enumerate(sorted(samples)):
+        path = samples[name].path
+        if not os.path.isfile(path) or not os.path.getsize(path):
+            continue
+        _info, method, measured = scan(path)
+        record = store.write_members(str(tmp_path / f"{i}.zip"), [_baseline(path, f"u{i}")])[0]
+        assert (record["method"], record["stored_size"]) == (method, measured), name
+        deflated += method == "deflate"
+    assert deflated >= 5, "too few kinds of files were checked"
