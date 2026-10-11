@@ -34,12 +34,22 @@ def alive(pid):
     return True
 
 
+def _system_tool(name):
+    """The tool's full path in the Windows system folder - never a file of that name that a search of the
+    current folder or of PATH would find first."""
+    import ctypes
+
+    folder = ctypes.create_unicode_buffer(260)
+    ctypes.WinDLL("kernel32").GetSystemDirectoryW(folder, len(folder))
+    return os.path.join(folder.value, name)
+
+
 def kill_tree(pid):
     """Kills a process and all of its descendants (a worker and any tool it launched)."""
     if not alive(pid):
         return
     if os.name == "nt":
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True,
+        subprocess.run([_system_tool("taskkill.exe"), "/F", "/T", "/PID", str(pid)], capture_output=True,
                        creationflags=_NO_WINDOW, timeout=30, check=False)
     else:
         try:

@@ -32,3 +32,21 @@ def test_kill_tree_of_a_finished_process_does_nothing():
     done = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True)
     procs.kill_tree(int(done.stdout))  # must not raise
     assert not procs.alive(int(done.stdout))
+
+
+def test_kill_tree_runs_the_system_tool_and_not_a_file_planted_under_its_name(tmp_path, monkeypatch):
+    import shutil
+
+    system32 = os.path.join(os.environ["SystemRoot"], "System32")
+    shutil.copy(os.path.join(system32, "whoami.exe"), tmp_path / "taskkill.exe")  # a harmless stand-in for a planted file
+    monkeypatch.chdir(tmp_path)
+    commands, real = [], subprocess.run
+    monkeypatch.setattr(procs.subprocess, "run", lambda cmd, **kw: commands.append(cmd) or real(cmd, **kw))
+    victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        procs.kill_tree(victim.pid)
+        assert wait_dead(victim.pid), "the planted file ran instead of the system tool"
+    finally:
+        victim.kill()
+    tool = commands[0][0]
+    assert os.path.isfile(tool) and os.path.normcase(os.path.dirname(tool)) == os.path.normcase(system32)
