@@ -15,6 +15,7 @@ from support.gui import (
     content_after_checkout,
     last_message,
     no_crash_reports,
+    wait_idle,
     workspace_of,
 )
 
@@ -226,6 +227,7 @@ def test_the_cloud_from_the_settings_screen(cloud_server, gui_window, qtbot, mon
     assert "Thank you" in last_message(message_boxes)[2]
 
     tab._check_for_updates()
+    wait_idle(qtbot, gui_window)
     assert "No release information" in last_message(message_boxes)[2]  # an unsigned answer is not trusted
 
     cloud_server.mode = "slow"
@@ -296,14 +298,32 @@ def test_feedback_that_cannot_be_queued_is_explained(gui_window, monkeypatch, me
     assert last_message(message_boxes)[:3] == ("warning", "Send Feedback", "Could not queue feedback: queue_full")
 
 
-def test_a_critical_release_is_marked_critical_and_never_installed(gui_window, monkeypatch, message_boxes):
+def test_a_critical_release_is_marked_critical_and_never_installed(gui_window, qtbot, monkeypatch, message_boxes):
     monkeypatch.setattr(main, "cloud_available", lambda: True)
     monkeypatch.setattr(main, "cloud_check_for_updates",
                         lambda: {"app_version": "2.1.0", "build_version": "42", "severity": "critical"})
     gui_window.settings_tab._check_for_updates()
+    wait_idle(qtbot, gui_window)
     text = last_message(message_boxes)[2]
     assert text.startswith("Latest Development release: 2.1.0 (build 42) (CRITICAL)")
     assert "never downloads or installs updates automatically" in text
+
+
+def test_a_slow_update_check_does_not_freeze_the_window(gui_window, qtbot, monkeypatch, message_boxes):
+    import threading
+    import time
+    answer = threading.Event()
+    monkeypatch.setattr(main, "cloud_available", lambda: True)
+    monkeypatch.setattr(main, "cloud_check_for_updates", lambda: answer.wait(20) and None)
+    before = len(message_boxes.calls)
+    start = time.monotonic()
+    gui_window.settings_tab._check_for_updates()
+    assert time.monotonic() - start < 1, "the window waited for the server"
+    assert gui_window.is_busy() and len(message_boxes.calls) == before
+    gui_window.settings_tab._check_for_updates()  # a second click while it is checking starts nothing
+    answer.set()
+    wait_idle(qtbot, gui_window)
+    assert len(message_boxes.calls) == before + 1 and "No release information" in last_message(message_boxes)[2]
 
 
 # --- storage locations: changing your mind, and the workspace reset --------------------------------------

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from core import api as main
 from gui.dialogs import BetaCodeDialog
 from gui.format_utils import ARCHIVE_SIZE_PRESETS
+from gui.workers import run_in_background
 
 DISCONNECT_FAILED_MESSAGE = ("Disconnect did not finish - another program (such as antivirus or backup) is using the "
                              "connection data right now.\nTry again in a moment.")
@@ -219,7 +220,16 @@ class SettingsTab(QWidget):
         if not main.cloud_available():
             QMessageBox.information(self, "Check for Updates", "Cloud is not available in this build.")
             return
-        release = main.cloud_check_for_updates()
+        if self.main_window.is_busy():
+            return
+        # asked in the background: a slow or unreachable server must not freeze the window
+        self.main_window.set_busy(True, "Checking for updates...")
+        self._thread, self._worker = run_in_background(
+            self, main.cloud_check_for_updates, self._on_update_checked, lambda _message: self._on_update_checked(None)
+        )
+
+    def _on_update_checked(self, release):
+        self.main_window.set_busy(False)
         if release is None:
             QMessageBox.information(self, "Check for Updates", "No release information is available right now (offline, or nothing published yet).")
             return
