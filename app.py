@@ -1,4 +1,5 @@
 """StorageArch - starts the desktop app (the GUI on the core)."""
+import logging
 import multiprocessing
 import os
 import sys
@@ -17,6 +18,10 @@ def _install_crash_hook(api):
                                    function_name=last.name if last else None,
                                    safe_code_location=f"{module}:{last.lineno}" if module else None)
         except Exception:  # noqa: BLE001 - the crash hook must never crash itself
+            pass
+        try:  # kept on this computer, in the log file of the data folder
+            logging.getLogger("storagearch").critical("unhandled error", exc_info=(exc_type, exc_value, exc_tb))
+        except Exception:  # noqa: BLE001
             pass
         default_hook(exc_type, exc_value, exc_tb)
 

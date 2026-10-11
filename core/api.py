@@ -30,6 +30,7 @@ BASELINE_NAME = "baseline_storagearch_zip"
 DEFAULT_MAX_ARCHIVE_SIZE = catalog_module.DEFAULT_MAX_ARCHIVE_SIZE
 COMPACT_DEAD_RATIO = 0.25
 _SPACE_MARGIN = 16 * 1024 * 1024
+_LOG_LIMIT = 1024 * 1024
 _SOURCE_ACTIONS = ("keep", "recycle", "delete")
 _SAVE_ROUNDS = 3                    # a source that keeps changing is saved this often before it is left alone
 _write_lock = threading.RLock()     # archive files and catalog writes: one writer at a time
@@ -75,8 +76,36 @@ def initialize():
     if repaired:
         log.warning("repaired interrupted writes: %s", repaired)
     sweep_stale(config.temp_dir())
+    _log_to(config.log_dir())
     events.start()
     return config.db_path()
+
+
+class _LogFile(logging.Handler):
+    """Writes warnings and errors to a file in the data folder. The file is opened for each line and closed
+    again - problems are rare - so nothing ever holds it and the data folder can be moved or removed. A full
+    file starts again and one old copy is kept. Writing the log never fails an operation."""
+
+    def __init__(self, folder):
+        super().__init__(logging.WARNING)
+        self.path = os.path.join(folder, "storagearch.log")
+        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+
+    def emit(self, record):
+        try:
+            line = self.format(record) + "\n"
+            if os.path.exists(self.path) and os.path.getsize(self.path) + len(line) > _LOG_LIMIT:
+                os.replace(self.path, self.path + ".1")
+            with open(self.path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(line)
+        except Exception:  # noqa: BLE001 - a log that cannot be written must not break anything
+            pass
+
+
+def _log_to(folder):
+    for handler in [h for h in log.handlers if isinstance(h, _LogFile)]:
+        log.removeHandler(handler)
+    log.addHandler(_LogFile(folder))
 
 
 def _cat():
