@@ -132,13 +132,21 @@ def report_operation(event, metrics=None):
 
 
 def start():
-    """At startup: app-started event, remote config refresh and queue retention - all in the background."""
+    """At startup: app-started event, remote config refresh (registered installations only) and queue
+    retention - all in the background."""
     if not connect():
         return
     _submit(lambda: _telemetry.record_app_started(sender=_get_sender()))
-    _submit(_remote_config.fetch_and_verify)
+    _submit(_refresh_remote_config)
     _submit(_refresh_disabled)
     _submit(_retention.prune_expired_queues)
+
+
+def _refresh_remote_config():
+    """Remote config is asked for only by a registered installation: until the user registers, the app
+    makes no network request at all."""
+    if _installation.is_registered():
+        _remote_config.fetch_and_verify()
 
 
 # Remote config (the admin dashboard) names strategies as the old version did; each old name disables the
@@ -200,7 +208,11 @@ def cloud_is_registered():
 def cloud_register(beta_code):
     if not CLOUD_AVAILABLE:
         return False, "cloud_unavailable"
-    return _guarded((False, "unexpected_error"), lambda: _installation.register(beta_code))
+    result = _guarded((False, "unexpected_error"), lambda: _installation.register(beta_code))
+    if isinstance(result, tuple) and result[0]:
+        _submit(_refresh_remote_config)
+        _submit(_refresh_disabled)
+    return result
 
 
 def cloud_disconnect():

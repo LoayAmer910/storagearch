@@ -94,7 +94,19 @@ def test_nothing_leaves_the_machine_before_the_user_opts_in(cloud_app, worker):
     _work_like_a_user(cloud_app)
     events.flush(5)
     time.sleep(1)
-    assert [r for r in worker.requests if r["path"] != "/api/v1/config"] == [], worker.requests
+    assert worker.requests == [], worker.requests
+
+
+def test_remote_config_is_fetched_only_once_the_user_registered(cloud_app, worker):
+    def config_requests():
+        return [r for r in worker.requests if r["path"] == "/api/v1/config"]
+    api.initialize()  # the app is started again, still not registered
+    events.flush(5)
+    assert config_requests() == []
+    assert api.cloud_register("VALID-CODE")[0]
+    assert wait_for(lambda: len(config_requests()) == 1), worker.requests
+    api.initialize()  # and every later start of a registered installation asks again
+    assert wait_for(lambda: len(config_requests()) == 2), worker.requests
 
 
 @pytest.mark.parametrize("code", BAD_CODES, ids=[f"code{i}" for i in range(len(BAD_CODES))])
