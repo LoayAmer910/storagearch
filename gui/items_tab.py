@@ -444,15 +444,45 @@ class ItemsTab(QWidget):
             return
         archive_id = item.archive_id
 
-        self.main_window.set_busy(True, "Verifying archive...")
-        self._thread, self._worker = run_in_background(
-            self, main.verify_archive_by_id, self._on_verify_done, self._on_action_failed, args=(archive_id,)
-        )
+        def verify():
+            status = main.verify_archive_by_id(archive_id)
+            return status, archive_id, (main.unrecorded_entries(archive_id) if status == "CHANGED" else [])
 
-    def _on_verify_done(self, status):
+        self.main_window.set_busy(True, "Verifying archive...")
+        self._thread, self._worker = run_in_background(self, verify, self._on_verify_done, self._on_action_failed)
+
+    def _on_verify_done(self, result):
+        status, archive_id, unrecorded = result
         self.main_window.set_busy(False)
         icon = QMessageBox.information if status == "VERIFIED" else QMessageBox.warning
         icon(self, "Verify", f"Archive integrity status: {status}")
+        self.main_window.refresh_all()
+        if unrecorded:
+            self._offer_repair(archive_id, unrecorded)
+
+    def _offer_repair(self, archive_id, unrecorded):
+        """Verifying never removes anything. Entries the catalog does not know are removed only if the user says so."""
+        answer = QMessageBox.question(
+            self, "Verify",
+            f"This archive holds {len(unrecorded)} entries that the catalog does not know.\n\n"
+            "They are either left over from an interrupted save, or they are items that were archived after "
+            "the catalog was restored from an older copy (a backup, or a sync tool).\n\n"
+            "Remove them from the archive? They will be deleted permanently.\n"
+            "If the catalog may have been restored or rolled back, choose No.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        self.main_window.set_busy(True, "Repairing archive...")
+        self._thread, self._worker = run_in_background(
+            self, main.repair_archive, self._on_repair_done, self._on_action_failed, args=(archive_id,))
+
+    def _on_repair_done(self, result):
+        self.main_window.set_busy(False)
+        if result["success"]:
+            QMessageBox.information(self, "Verify", f"{result['removed']} entries were removed. "
+                                                    f"Archive integrity status: {result['status']}")
+        else:
+            QMessageBox.warning(self, "Verify", f"The archive could not be repaired. Archive integrity status: {result['status']}")
         self.main_window.refresh_all()
 
     def _on_action_failed(self, message):

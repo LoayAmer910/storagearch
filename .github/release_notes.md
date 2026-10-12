@@ -9,7 +9,7 @@ The app keeps its data in a `SmartArchiveData` folder next to `StorageArch.exe` 
 **What is new in 1.0.1**
 
 - A source or a checked-out copy is removed only if it did not change while it was being saved; changes made in the meantime are saved too.
-- A crash or a power cut in the middle of a write leaves the archive and the catalog consistent; an archive that an old crash left marked as changed is repaired when it is verified.
+- A crash or a power cut in the middle of a write leaves the archive and the catalog consistent; verifying never removes anything: entries an old crash left in an archive are reported, and removed only if you say so.
 - Only one copy of the app works on a data folder at a time.
 - The data folder can be moved to another place or drive and is found again, and the data always sits next to the EXE file, whatever folder the app is started from.
 - Long operations show their progress and can be cancelled; a cancelled operation leaves nothing half done.

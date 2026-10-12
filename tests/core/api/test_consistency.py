@@ -187,16 +187,70 @@ def _log():
         return f.read()
 
 
-def test_an_entry_the_catalog_never_recorded_is_removed_from_an_open_archive(app):
+def test_verifying_reports_an_entry_the_catalog_does_not_know_and_removes_nothing(app):
+    _archive(app, "a.txt")
+    zip_path, = _zips()
+    _add_unrecorded_entry(zip_path)
+    with_orphan = read(zip_path)
+    archive_id = api.list_archives()[0].id
+    for verify in (lambda: api.verify_category("Docs"), api.verify_all, lambda: api.verify_archive_by_id(archive_id)):
+        verify()
+        assert read(zip_path) == with_orphan, "verifying changed the archive"
+    assert api.verify_category("Docs") == {os.path.basename(zip_path): "CHANGED"}
+    assert api.unrecorded_entries(archive_id) == ["orphan/left_by_a_crash.txt"]
+
+
+def test_the_user_can_have_such_entries_removed_and_only_then_they_go(app):
     src = _archive(app, "a.txt")
     zip_path, = _zips()
     _add_unrecorded_entry(zip_path)
-    assert api.verify_category("Docs") == {os.path.basename(zip_path): "VERIFIED"}
+    archive_id = api.list_archives()[0].id
+    assert api.repair_archive(archive_id) == {"success": True, "removed": 1, "status": "VERIFIED"}
     assert "orphan/left_by_a_crash.txt" not in zipfile.ZipFile(zip_path).namelist()
-    assert "never recorded" in _log() and "orphan/left_by_a_crash.txt" in _log()
+    assert "orphan/left_by_a_crash.txt" in _log() and api.unrecorded_entries(archive_id) == []
     assert read(api.checkout(item_id_by_name("a.txt"), destination=str(app / "out"))) == read(src)
+    assert api.repair_archive(archive_id) == {"success": True, "removed": 0, "status": "VERIFIED"}  # nothing left to do
     _archive(app, "b.txt", seed=2)
     _healthy("a.txt", "b.txt")
+
+
+def test_a_catalog_put_back_from_an_older_copy_does_not_cost_the_items_added_since(app):
+    """The database is restored from a backup, or a sync tool brings back an older version of it: what was archived
+    since is in the archive but not in the catalog. Verifying must not take that for leftovers of a crash."""
+    _archive(app, "a.txt")
+    older = read(config.db_path())
+    newer_file = _archive(app, "b.txt", seed=2)
+    newer = read(config.db_path())
+    zip_path, = _zips()
+    whole = read(zip_path)
+
+    with open(config.db_path(), "wb") as f:   # the older catalog comes back
+        f.write(older)
+    api.initialize()
+    assert _names() == ["a.txt"]
+    assert api.verify_category("Docs") == {os.path.basename(zip_path): "CHANGED"}
+    api.verify_all()
+    assert read(zip_path) == whole, "verifying removed what the older catalog does not know"
+    assert len(api.unrecorded_entries(api.list_archives()[0].id)) == 1   # reported, for the user to decide
+
+    with open(config.db_path(), "wb") as f:   # the right catalog comes back: nothing was lost
+        f.write(newer)
+    api.initialize()
+    _healthy("a.txt", "b.txt")
+    assert read(api.checkout(item_id_by_name("b.txt"), destination=str(app / "out"))) == read(newer_file)
+
+
+def test_only_an_open_and_otherwise_whole_archive_can_be_repaired(app):
+    _archive(app, "a.txt")
+    zip_path, = _zips()
+    archive_id = api.list_archives()[0].id
+    assert api.unrecorded_entries(archive_id) == [] and api.unrecorded_entries(12345) == []
+    with open(zip_path, "ab") as f:
+        f.write(b"x")                          # data after the end: not what an interrupted write leaves
+    tampered = read(zip_path)
+    assert api.unrecorded_entries(archive_id) == []
+    assert api.repair_archive(archive_id) == {"success": False, "removed": 0, "status": "CHANGED"}
+    assert read(zip_path) == tampered
 
 
 def test_a_recorded_size_that_fell_behind_the_file_is_corrected(app):
@@ -286,6 +340,8 @@ def test_a_sealed_archive_is_never_rewritten(app, monkeypatch):
     _add_unrecorded_entry(sealed)                  # even what would be repaired in an open archive
     changed = read(sealed)
     assert api.verify_category("Small")[os.path.basename(sealed)] == "CHANGED" and read(sealed) == changed
+    sealed_id = next(a.id for a in api.list_archives() if a.file_name == os.path.basename(sealed))
+    assert api.unrecorded_entries(sealed_id) == [] and api.repair_archive(sealed_id)["removed"] == 0 and read(sealed) == changed
     assert read(api.checkout(item_id, destination=str(app / "back"))) == read(src) + b"edited\n"
 
 

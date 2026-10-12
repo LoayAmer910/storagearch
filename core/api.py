@@ -50,6 +50,7 @@ __all__ = [
     "cancel_current_operation", "operation_progress", "OperationCancelled",
     "checkin", "checkin_result",
     "items_pending_return", "handle_pending_checkouts_on_exit", "verify_archive_by_id", "verify_category",
+    "unrecorded_entries", "repair_archive",
     "verify_all", "is_protected_path", "get_storage_locations", "set_storage_location", "reset_workspace_location",
     "calculate_file_hash", "calculate_folder_hash", "validate_source_path", "data_root", "shutdown_cloud",
     "CloudPlaceholderError", "InvalidPathError", "SourceInUseError", "LegacyDatabaseError", "AlreadyRunningError",
@@ -279,41 +280,75 @@ def _verify_archive_row(archive_id, row, members=None):
     known = [m["path_in_archive"] for m in cat.members_of_archive(archive_id, live_only=False)]
     status = store.verify_archive(row.file_path, cat.members_of_archive(archive_id) if members is None else members,
                                   sealed, expected_size=row.current_size, known_names=known)
-    if status == "CHANGED" and _repair_open_archive(archive_id):
+    if status == "CHANGED" and _correct_recorded_size(archive_id):
         return _verify_archive_row(archive_id, cat.archive_by_id(archive_id), members)
     return status
 
 
-def _repair_open_archive(archive_id):
-    """Makes good what an interrupted write or compaction left in an open archive: entries the catalog never
-    recorded, or a recorded size that fell behind. Only when the file is a whole ZIP with nothing after it
-    and every recorded member in it is intact - anything else stays reported as it is. A sealed archive is
-    never touched. Returns whether something was repaired."""
+# Entries the catalog does not know
+#
+# An open archive can hold entries its catalog never recorded. They are either what an interrupted write of an
+# older version left behind - or real items, when the catalog itself went back in time (restored from a backup,
+# rolled back by a sync tool). The two cannot be told apart from the archive, so verifying only reports them
+# (CHANGED) and never removes anything; removing them is repair_archive(), which the user asks for.
+
+def _unrecorded(archive_id):
+    """(the archive's row, the entries its catalog does not know) when the archive can be repaired: open, a whole
+    ZIP with nothing after it, every recorded member intact. Otherwise (None, [])."""
     cat = _cat()
-    with _write_lock:
-        row, state = cat.archive_by_id(archive_id), cat.archive_state(archive_id)
-        if row is None or state["state"] != "open" or not os.path.exists(row.file_path):
-            return False
-        live = cat.members_of_archive(archive_id)
-        if not store.ends_cleanly(row.file_path) or store.verify_archive(row.file_path, live) != "VERIFIED":
-            return False
+    row, state = cat.archive_by_id(archive_id), cat.archive_state(archive_id)
+    if row is None or state["state"] != "open" or not os.path.exists(row.file_path):
+        return None, []
+    try:
+        if not store.ends_cleanly(row.file_path) or store.verify_archive(row.file_path, cat.members_of_archive(archive_id)) != "VERIFIED":
+            return None, []
         known = {m["path_in_archive"] for m in cat.members_of_archive(archive_id, live_only=False)}
-        unknown = sorted(store.entry_names(row.file_path) - known)
-        if not unknown and os.path.getsize(row.file_path) == row.current_size:
+        return row, sorted(store.entry_names(row.file_path) - known)
+    except (store.StoreError, OSError):
+        return None, []
+
+
+def _correct_recorded_size(archive_id):
+    """The recorded size of an open archive fell behind its file (a compaction whose catalog update never
+    happened): it is recorded again. Nothing is removed from the archive. Returns whether it was corrected."""
+    with _write_lock:
+        row, unknown = _unrecorded(archive_id)
+        if row is None or unknown or os.path.getsize(row.file_path) == row.current_size:
             return False
-        category = cat.category_by_id(row.category_id)
         try:
-            if unknown:
-                log.warning("%s held %d entries the catalog never recorded (an interrupted write); removed: %s",
-                            row.file_path, len(unknown), unknown[:5])
-                _compact(archive_id, category)
-            else:
-                log.warning("the recorded size of %s had fallen behind the file; corrected", row.file_path)
-                _refresh_old_archive(archive_id, category)
+            log.warning("the recorded size of %s had fallen behind the file; corrected", row.file_path)
+            _refresh_old_archive(archive_id, _cat().category_by_id(row.category_id))
         except (store.StoreError, OSError, sqlite3.Error) as exc:
-            log.error("%s could not be repaired: %s", row.file_path, exc)
+            log.error("the recorded size of %s could not be corrected: %s", row.file_path, exc)
             return False
         return True
+
+
+def unrecorded_entries(archive_id):
+    """The entries of an open archive that its catalog does not know - what repair_archive() would remove.
+    Empty for an archive that is whole, sealed, damaged in another way, or not there."""
+    with _write_lock:
+        return _unrecorded(archive_id)[1]
+
+
+def repair_archive(archive_id):
+    """Removes from an open archive the entries its catalog does not know. Only on the user's request: if the
+    catalog was restored from an older copy, these entries are items, and removing them loses them for good.
+    Returns {"success", "removed", "status"}."""
+    cat = _cat()
+    with _write_lock:
+        row, unknown = _unrecorded(archive_id)
+        removed = 0
+        if row is not None and unknown:
+            try:
+                log.warning("%s: removing %d entries the catalog does not know, at the user's request: %s",
+                            row.file_path, len(unknown), unknown[:20])
+                _compact(archive_id, cat.category_by_id(row.category_id))
+                removed = len(unknown)
+            except (store.StoreError, OSError, sqlite3.Error) as exc:
+                log.error("%s could not be repaired: %s", row.file_path, exc)
+        status = verify_archive_by_id(archive_id)
+    return {"success": status == "VERIFIED", "removed": removed, "status": status}
 
 
 # --- paths and hashes the GUI checks before archiving -------------------------------------------------

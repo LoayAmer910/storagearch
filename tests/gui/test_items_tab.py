@@ -891,3 +891,40 @@ def test_a_failed_checkout_tells_the_user_why(gui_window, message_boxes):
     assert "free space" in told["INSUFFICIENT_SPACE"] and "too long" in told["PATH_TOO_LONG"]
     assert "already" in told["TARGET_EXISTS"] and told["SMART_RESTORE_ERROR"].startswith("Checkout failed")
     assert len(set(told.values())) == 4  # each reason has its own words
+
+
+@pytest.mark.parametrize("answer_yes", [False, True], ids=["the user says no", "the user says yes"])
+def test_verify_never_removes_entries_the_catalog_does_not_know_unless_the_user_says_so(gui_window, qtbot, monkeypatch, make_file,
+                                                                                       message_boxes, answer_yes):
+    from PySide6.QtWidgets import QMessageBox
+
+    main.create_category("Docs")
+    archive_file_through_gui(gui_window, qtbot, monkeypatch, make_file("kept.txt", "content " * 500), "Docs")
+    archive = main.list_archives()[0]
+    with zipfile.ZipFile(archive.file_path, "a") as z:
+        z.writestr("unknown/entry.txt", "the catalog does not know this entry " * 50)
+    with open(archive.file_path, "rb") as f:
+        with_entry = f.read()
+    asked = []
+
+    def question(parent, title, text, *args, **kwargs):
+        asked.append(text)
+        with open(archive.file_path, "rb") as f:
+            assert f.read() == with_entry, "the archive was changed before the user answered"
+        return QMessageBox.Yes if answer_yes else QMessageBox.No
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+    gui_window.items_tab.refresh()
+    select_row_by_name(gui_window.items_tab.table, "kept.txt")
+    gui_window.items_tab._verify_selected()
+    wait_idle(qtbot, gui_window)
+
+    assert len(asked) == 1 and "1 entries" in asked[0] and "permanently" in asked[0] and "choose No" in asked[0]
+    assert ("warning", "Verify", "Archive integrity status: CHANGED") in [c[:3] for c in message_boxes.calls]
+    names = zipfile.ZipFile(archive.file_path).namelist()
+    if answer_yes:
+        assert "unknown/entry.txt" not in names and message_boxes.calls[-1][2].startswith("1 entries were removed")
+        assert main.verify_archive_by_id(archive.id) == "VERIFIED"
+    else:
+        assert "unknown/entry.txt" in names and main.verify_archive_by_id(archive.id) == "CHANGED"
+        with open(archive.file_path, "rb") as f:
+            assert f.read() == with_entry
