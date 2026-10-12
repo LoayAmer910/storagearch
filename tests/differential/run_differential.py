@@ -8,12 +8,10 @@ the old one. The old engine runs the way the packaged app ran it (concurrency ov
 
 Writes OUT_DIR/report.json and prints a summary. Nothing is written into the source folders.
 """
-import hashlib
 import json
 import os
 import subprocess
 import sys
-import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))

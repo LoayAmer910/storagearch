@@ -1,4 +1,4 @@
-"""Telemetry queue (plan §17.1): max 5 MB, FIFO, oldest-drop when full,
+"""Telemetry queue: max 5 MB, FIFO, oldest-drop when full,
 max local age 30 days, deleted immediately when Telemetry is turned OFF."""
 import threading
 

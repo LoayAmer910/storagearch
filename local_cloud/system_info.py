@@ -1,4 +1,4 @@
-"""Limited, privacy-safe environment info (plan §6.3) for app_started only.
+"""Limited, privacy-safe environment info for app_started only.
 Explicitly excludes CPU model, serial numbers, machine name, username, or
 exact anything - `platform.platform()`/`platform.machine()` never include
 those on Windows (unlike `platform.node()`, which returns the computer name

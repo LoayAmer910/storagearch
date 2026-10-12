@@ -201,10 +201,10 @@ class PendingCheckoutsDialog(QDialog):
 
 
 class FeedbackDialog(QDialog):
-    """C7 - Cloud Feedback (plan §13). Category required; rating/text
+    """Cloud Feedback. Category required; rating/text
     optional; diagnostics checkbox OFF by default and unchecked here means
     nothing extra is ever attached - this dialog never knows or cares
-    whether Telemetry is on (plan §13.3: Feedback works either way)."""
+    whether Telemetry is on (Feedback works either way)."""
 
     CATEGORIES = [
         ("Bug", "bug"),
@@ -264,8 +264,7 @@ class FeedbackDialog(QDialog):
 
 
 class BetaCodeDialog(QDialog):
-    """C5 - collects the shared Development Beta Code for registration
-    (plan §15.3). The code itself is never stored in this repository or
+    """Collects the shared access code for registration. The code itself is never stored in this repository or
     embedded in the app - the user types it in here each time it's needed."""
 
     def __init__(self, parent=None):

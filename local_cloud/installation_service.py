@@ -1,6 +1,6 @@
-"""Installation registration + credential lifecycle (plan §15).
+"""Installation registration + credential lifecycle.
 
-Registration uses the existing Development Beta Code flow (C2B) unchanged -
+Registration uses the access code flow of the server unchanged -
 this module is a thin, honest client of that endpoint, never reimplementing
 any of its security logic. On success, the installation token and request-
 signing secret are handed straight to dpapi_store - they are never written
@@ -29,7 +29,7 @@ def get_installation_id():
 
 
 def register(beta_code):
-    """Registers a new installation using the shared Development Beta Code.
+    """Registers a new installation using the shared access code.
     Returns (success: bool, error_code: str | None). Never raises - a
     registration failure is always reported through the return value, so a
     caller (GUI or test) never has to guard this with a try/except of its

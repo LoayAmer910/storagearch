@@ -1,5 +1,5 @@
-"""Feedback (plan §13). Explicit user action only - never gated by
-Telemetry consent (plan §13.3: "If Telemetry is OFF, Feedback is still
+"""Feedback. Explicit user action only - never gated by
+Telemetry consent ("If Telemetry is OFF, Feedback is still
 allowed because the send action is explicit"), and sending Feedback never
 turns Telemetry on or starts automatic tracking (this module never touches
 telemetry_service's consent state at all).
@@ -22,7 +22,7 @@ def _utc_now_iso():
 def submit_feedback(category, rating=None, feedback_text=None, include_diagnostics=False, diagnostic_snapshot=None, beta_code=None, sender=None):
     """Returns (success: bool, error_code: str | None).
 
-    `include_diagnostics` defaults False (plan §13.2: the checkbox is OFF
+    `include_diagnostics` defaults False (the checkbox is OFF
     by default) - `diagnostic_snapshot`, when provided, must already be the
     approved narrow shape (app/build/channel, Windows version/arch, last
     operation type/result, safe error category/code, storage location type)
@@ -62,7 +62,7 @@ def submit_feedback(category, rating=None, feedback_text=None, include_diagnosti
     # - it is a wire-transport concern specific to this one endpoint's
     # unauthenticated fallback path, added only after the schema-validated
     # portion is built and privacy-checked, mirroring exactly how the
-    # backend's own feedback.ts strips it out again before validation.
+    # backend strips it out again before validation.
     try:
         privacy.assert_no_forbidden_keys(payload)
     except ValueError:

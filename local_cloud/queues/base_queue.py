@@ -1,4 +1,4 @@
-"""Shared persistent-queue mechanics (plan §17) - one SQLite file per queue
+"""Shared persistent-queue mechanics - one SQLite file per queue
 type (telemetry_queue.db / feedback_queue.db / crash_queue.db), completely
 separate from the StorageArch business database.
 
@@ -9,8 +9,8 @@ so this module never inspects payload content, only manages bytes/rows.
 Corruption handling: if the queue DB file can't be opened as valid SQLite,
 it is isolated (renamed aside) and a fresh one created - never blocks
 startup, never raises into a caller performing a real local operation
-(plan §17.1's corruption-handling requirement, applied uniformly to all
-three queue types since the plan asks for it on telemetry/crash and the
+(the corruption-handling requirement, applied uniformly to all
+three queue types since telemetry/crash need it and the
 same fail-safe logic is equally correct for feedback).
 """
 import os
@@ -40,7 +40,13 @@ class PersistentQueue:
         self.max_bytes = max_bytes
         self.max_age_days = max_age_days
         self.drop_oldest_when_full = drop_oldest_when_full
-        self._ensure_schema()
+        # The file is created by the first enqueue, not here: an installation that never queues anything
+        # (the cloud is optional) gets no queue files. A file that is already there is checked now.
+        if self._exists():
+            self._ensure_schema()
+
+    def _exists(self):
+        return os.path.isfile(self.db_path)
 
     def _connect(self):
         return sqlite3.connect(self.db_path, timeout=5)
@@ -103,10 +109,11 @@ class PersistentQueue:
 
     def enqueue(self, item_key, payload_json):
         """Returns True if the item was queued, False if rejected (feedback-
-        queue-full case, plan §17.3: "reject a new queued Feedback entry").
+        queue-full case: a new queued Feedback entry is rejected).
         For drop_oldest_when_full queues (telemetry/crash), the new item is
         always accepted - old items are dropped instead, never the new one,
-        matching plan §17.1/§17.2's FIFO oldest-drop rule."""
+        matching the FIFO oldest-drop rule."""
+        self._ensure_schema()
         try:
             conn = self._connect()
         except sqlite3.DatabaseError:
@@ -149,7 +156,7 @@ class PersistentQueue:
             conn.close()
 
     def prune_expired(self):
-        if self.max_age_days is None:
+        if self.max_age_days is None or not self._exists():
             return 0
         cutoff = (datetime.now(timezone.utc) - _timedelta_days(self.max_age_days)).strftime("%Y-%m-%dT%H:%M:%S.") + "000Z"
         conn = self._connect()
@@ -161,6 +168,8 @@ class PersistentQueue:
             conn.close()
 
     def list_pending(self, limit=50):
+        if not self._exists():
+            return []
         conn = self._connect()
         try:
             rows = conn.execute(
@@ -172,6 +181,8 @@ class PersistentQueue:
             conn.close()
 
     def count(self):
+        if not self._exists():
+            return 0
         conn = self._connect()
         try:
             return conn.execute("SELECT count(*) FROM queue_items").fetchone()[0]
@@ -179,6 +190,8 @@ class PersistentQueue:
             conn.close()
 
     def remove(self, item_id):
+        if not self._exists():
+            return
         conn = self._connect()
         try:
             conn.execute("DELETE FROM queue_items WHERE id = ?", (item_id,))
@@ -187,6 +200,8 @@ class PersistentQueue:
             conn.close()
 
     def record_attempt(self, item_id):
+        if not self._exists():
+            return
         conn = self._connect()
         try:
             conn.execute(
@@ -198,14 +213,13 @@ class PersistentQueue:
             conn.close()
 
     def clear(self):
-        """Deletes the queue file entirely (plan §17.1: "delete queue
+        """Deletes the queue file entirely ("delete queue
         immediately when Telemetry is turned OFF")."""
         if os.path.isfile(self.db_path):
             try:
                 os.remove(self.db_path)
             except OSError:
-                pass
-        self._ensure_schema()
+                self._ensure_schema()  # held open by the sender: it stays, and its rows are dropped unsent
 
 
 def _timedelta_days(days):

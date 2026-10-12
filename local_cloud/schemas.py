@@ -1,16 +1,15 @@
-"""Wire payload builders - the client-side mirror of cloud/schemas/src/
-{envelope,telemetry,feedback,crash}.ts.
+"""Wire payload builders - the client-side mirror of the server's schemas
+(envelope, telemetry, feedback, crash).
 
 Every function here takes only explicit, named, already-sanitized
 parameters and returns a plain dict containing ONLY the fields the backend
-schema allows (plan §8's "constructed from approved fields... never
+schema allows (the "constructed from approved fields... never
 serialize a large internal object and then try to remove unsafe fields").
 Optional fields are OMITTED from the dict entirely when not provided
 (never sent as an explicit `null`) - the backend's zod `.optional()`
 schemas accept a missing key, not a null value, so this must match.
 
-schema_version is frozen at 1 for the whole of this Beta era, exactly as
-the backend documents (API_CONTRACT.md referenced by cloud/schemas).
+schema_version is frozen at 1, exactly as the backend documents.
 """
 import uuid
 

@@ -1,6 +1,6 @@
-"""Single source of truth for everything that must be fixed at build time
-per plan §23 ("Environment is fixed at build time... A Development Build
-cannot accidentally send to Beta. There is no runtime/user-facing switch.")
+"""Single source of truth for everything that must be fixed at build time:
+the environment a build talks to is decided here, and there is no runtime or
+user-facing switch.
 
 This is the ONLY module in local_cloud/ whose values differ between a
 Development build and a Beta build - `local_state.py` (RELEASE_CHANNEL/
@@ -24,8 +24,8 @@ BUILD_VERSION = "1.0.1"
 
 BASE_URL = "https://storagearch-api-beta.storagearch-worker-public.workers.dev"
 
-# The PUBLIC half of this channel's Ed25519 signing keypair only (plan §29:
-# "The EXE contains only public keys") - safe to embed in source/commit
+# The PUBLIC half of this channel's Ed25519 signing keypair only (the EXE
+# contains only public keys) - safe to embed in source/commit
 # either way. The matching private key is a Cloudflare Worker secret and
 # must never appear anywhere in this repository, in either channel's value.
 SIGNING_PUBLIC_KEY_SPKI_B64 = "MCowBQYDK2VwAyEAeUQJe7gCafz6vsvlvH5wq9FIEUCAChWXiGnFSHLVI70="

@@ -1,15 +1,15 @@
-"""Remote Config client (plan §28-29). Fetches, verifies (Ed25519), and
+"""Remote Config client. Fetches, verifies (Ed25519), and
 maintains a Last Known Good copy of exactly the three approved keys.
 
 Cannot weaken local safety by construction: this module is only ever
 consulted for two things elsewhere in the app -
 `telemetry_service.is_globally_enabled()` (an AND-gate that can only make
 effective telemetry MORE off, never on) and `disabled_strategies_set()`
-(an ADDITIVE filter smart_compression.py applies to its own candidate list
+(an ADDITIVE filter the core applies to its own candidate list
 BEFORE evaluation - it can only remove a strategy already in the installed
 binary, never add one that isn't, never touch SHA-256/Verify/exact-restore/
-fallback/timeout logic at all). Nothing else in this package or main.py
-reads Remote Config for anything else.
+fallback/timeout logic at all). Nothing else in this package or in the
+core reads Remote Config for anything else.
 """
 import json
 import os
@@ -55,7 +55,7 @@ def fetch_and_verify():
         return None
 
     # Rollback/downgrade protection: a signature being valid only proves the
-    # payload came from the real Development signer, not that it's the
+    # payload came from the real signer, not that it's the
     # LATEST thing the signer published - a validly-signed but stale
     # response (replay, edge cache, attacker-controlled downgrade) must not
     # be allowed to quietly replace a newer Last Known Good. Equal version
@@ -72,7 +72,7 @@ def fetch_and_verify():
 
 def get_last_known_good():
     """Returns the last verified config, or None if none has ever been
-    saved (fresh install / never reached the network yet - plan §28's own
+    saved (fresh install / never reached the network yet - the own
     "If no LKG: use safe built-in defaults" case, which callers handle by
     treating None the same way they'd handle a disabled/absent key)."""
     path = local_state.remote_config_lkg_path()

@@ -3,8 +3,8 @@
 The same function runs on a thread and inside a worker process, so the two paths cannot drift apart
 (in the old version the fast path skipped the restore check). It never raises: every failure becomes a
 result with a status. The stored file stays in the work dir; only small facts travel back. compress_s and
-restore_s are CPU seconds (this thread plus the tools it ran), so the policy's speed rule does not depend
-on how busy the machine is.
+restore_s are CPU seconds (this thread plus the tools it ran); they are reported in the log and decide
+nothing (core/policy.py judges by size only).
 """
 import hashlib
 import os

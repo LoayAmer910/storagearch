@@ -1,6 +1,6 @@
-"""Telemetry consent + event construction (plan §5, §9-§11).
+"""Telemetry consent + event construction.
 
-Local consent is authoritative (plan §5.1) - `is_consent_on()` reads only
+Local consent is authoritative - `is_consent_on()` reads only
 the local config file; nothing in this module or package can be made to
 report telemetry the user hasn't explicitly turned on, and Remote Config's
 `telemetry_globally_enabled` can only ever make effective telemetry MORE
@@ -23,7 +23,7 @@ def is_consent_on():
 
 
 def is_globally_enabled():
-    """Consults the last-known-good Remote Config (plan §5.1's "global
+    """Consults the last-known-good Remote Config (the "global
     Cloud safety switch"). Defaults to True (enabled) when no config has
     ever been fetched - absence of a kill switch is not itself a reason to
     withhold telemetry the user already separately consented to."""
@@ -43,9 +43,8 @@ def set_consent(enabled, sender=None):
     """Flips local consent. Turning ON never happens remotely - this is
     only ever called from a local user action (a GUI checkbox, a test).
     Turning OFF: best-effort SYNCHRONOUS opt-out signal (never queued -
-    plan §32.8 "must not preserve telemetry after consent is withdrawn
-    just to guarantee an alert"), then the queue is deleted immediately
-    (plan §17.1)."""
+    telemetry must not be kept after consent is withdrawn just to
+    guarantee an alert), then the queue is deleted immediately."""
     config = local_state.load_config()
     was_enabled = bool(config.get("telemetry_enabled", False))
     if bool(enabled) == was_enabled:
@@ -129,8 +128,8 @@ def record_operation_event(
     smart_metrics=None,
     sender=None,
 ):
-    """The main C6 integration point - called from main.py's orchestration
-    functions strictly AFTER the local operation has already committed to
+    """The main integration point - called by core/events.py for the core's
+    operations strictly AFTER the local operation has already committed to
     its final result. Never affects that result: this function has no
     return value callers act on, and never raises (see `_enqueue`)."""
     if not is_effectively_enabled():

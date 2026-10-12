@@ -1,4 +1,4 @@
-"""Release/update check (plan §30). Notification only - nothing here ever
+"""Release/update check. Notification only - nothing here ever
 downloads or installs anything; the only output is verified metadata for a
 caller (GUI) to display. A failure of any kind returns None silently and
 must never affect normal StorageArch operation.

@@ -12,7 +12,7 @@ import os
 import struct
 
 from core import tools
-from core.strategies.base import MIB, Strategy, StrategyError, StrategySpec
+from core.strategies.base import Strategy, StrategyError, StrategySpec
 
 _JXL_SPEC = dict(version=1, weight="heavy", in_process_safe=True, max_in_process_bytes=1 << 40,
                  base_timeout_s=30, seconds_per_mib=4.0)  # the tool is a child process with its own timeout

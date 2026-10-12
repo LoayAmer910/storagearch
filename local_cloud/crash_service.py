@@ -1,4 +1,4 @@
-"""Crash reporting (plan §12). Local sanitizer FIRST: this module never
+"""Crash reporting. Local sanitizer FIRST: this module never
 looks at `str(exception)`, `exception.args`, or a traceback object anywhere
 - only `type(exception).__name__` (a fixed, safe class name like
 "FileNotFoundError") and whatever safe, pre-sanitized strings the caller
@@ -7,8 +7,8 @@ exception message can legitimately contain a file path (e.g.
 FileNotFoundError's default message) - that's exactly why this module
 never touches it.
 
-Only ever queues anything when Telemetry is ON (plan §12.1) - the caller
-(the global exception hook, C7) is expected to check
+Only ever queues anything when Telemetry is ON - the caller
+(the global exception hook) is expected to check
 telemetry_service.is_effectively_enabled() before calling this, but this
 function re-checks it directly too, so a crash can never be queued by a
 caller that forgot to check.

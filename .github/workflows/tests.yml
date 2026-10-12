@@ -47,6 +47,9 @@ jobs:
           & (Join-Path $tools "cjxl.exe") --version
           "STORAGEARCH_JXL_TOOLS_DIR=$tools" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Lint (real mistakes only)
+        run: python -m ruff check .
+
       - name: Smoke
         run: python -m pytest tests/test_smoke.py -q -p no:cacheprovider
 

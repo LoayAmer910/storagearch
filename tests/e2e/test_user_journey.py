@@ -131,7 +131,6 @@ def test_full_folder_e2e_through_gui(gui_window, qtbot, monkeypatch, sandbox):
 
     items = main.search("e2e_folder")
     assert len(items) == 1
-    zip_path = items[0][10]
 
     gui_window.items_tab.refresh()
     select_row_by_name(gui_window.items_tab.table, "e2e_folder")

@@ -1,4 +1,4 @@
-"""Windows DPAPI credential protection (plan §14: "Secrets stored locally
+"""Windows DPAPI credential protection ("Secrets stored locally
 must be protected using Windows DPAPI").
 
 Uses `crypt32.dll`'s `CryptProtectData`/`CryptUnprotectData` directly via
@@ -94,7 +94,7 @@ def load_credentials():
     decrypted/parsed (wrong user, corruption, tampering) - never raises,
     matching the fail-safe requirement that a Cloud-state problem must
     never block normal StorageArch use. A load failure here is exactly the
-    "invalid/expired/revoked" local state case the plan expects the app to
+    "invalid/expired/revoked" local state case the app is expected to
     tolerate gracefully."""
     path = local_state.credentials_path()
     if not os.path.isfile(path):

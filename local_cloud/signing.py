@@ -1,4 +1,4 @@
-"""Request signing - the client-side mirror of cloud/SIGNING_FORMAT.md.
+"""Request signing - the client-side mirror of the server's signing format.
 
 ONE canonical format, matching the backend exactly (frozen there, mirrored
 here - never a client-specific variant):
@@ -6,8 +6,7 @@ here - never a client-specific variant):
     {METHOD}\\n{PATH}\\n{TIMESTAMP}\\n{REQUEST_ID}\\n{SHA256_HEX(BODY)}
 
 signed as HMAC-SHA256(signing_secret_bytes, canonical_string), lowercase hex.
-Only Python stdlib (`hashlib`, `hmac`, `uuid`) - no homemade primitive
-(plan §16/§29), same rule the backend follows.
+Only Python stdlib (`hashlib`, `hmac`, `uuid`) - no homemade primitive, same rule the backend follows.
 """
 import hashlib
 import hmac as hmac_module
@@ -17,7 +16,7 @@ from datetime import datetime, timezone
 
 def utc_timestamp():
     """ISO-8601 UTC with millisecond precision and a literal 'Z', e.g.
-    2026-08-14T12:00:00.000Z - matches canonicalize.ts's documented format
+    2026-08-14T12:00:00.000Z - matches the server's documented format
     exactly (byte-for-byte, since the timestamp is signed as-is, never
     reformatted)."""
     now = datetime.now(timezone.utc)
@@ -26,7 +25,7 @@ def utc_timestamp():
 
 def fresh_request_id():
     """A fresh UUID for every network attempt (never reused across retries -
-    that's what makes it different from event_id, plan §16)."""
+    that's what makes it different from event_id)."""
     return str(uuid.uuid4())
 
 

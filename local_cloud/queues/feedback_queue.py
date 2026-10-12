@@ -1,4 +1,4 @@
-"""Feedback queue (plan §17.3): max 1 MB, user-initiated, no automatic
+"""Feedback queue: max 1 MB, user-initiated, no automatic
 expiration, no automatic oldest-deletion - if full, a new submission is
 REJECTED (the caller must tell the user to send/wait rather than silently
 losing older unsent feedback, which - unlike telemetry/crash - was an

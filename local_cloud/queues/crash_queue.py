@@ -1,4 +1,4 @@
-"""Crash queue (plan §17.2): max 1 MB, FIFO, oldest-drop when full,
+"""Crash queue: max 1 MB, FIFO, oldest-drop when full,
 30-day retention. Sanitized content only - crash_service.py is the only
 writer, and it never passes raw exception text/paths/args into a payload
 (see schemas.build_crash_report - there is no field for them)."""

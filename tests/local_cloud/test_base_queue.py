@@ -89,3 +89,15 @@ def test_clearing_a_queue_file_held_by_another_connection_does_not_fail(tmp_path
     finally:
         holder.close()
     assert q.count() == 1, "a file that could not be deleted keeps its rows"
+
+
+def test_a_queue_nothing_was_put_into_leaves_no_file(tmp_path):
+    q = _queue(tmp_path, max_age_days=30)
+    assert q.count() == 0 and q.list_pending() == [] and q.prune_expired() == 0
+    q.remove(1)
+    q.record_attempt(1)
+    q.clear()
+    assert list(tmp_path.iterdir()) == []
+    assert q.enqueue("first", "{}") and q.count() == 1 and (tmp_path / "q.db").is_file()
+    q.clear()
+    assert list(tmp_path.iterdir()) == [] and q.count() == 0  # emptied: the file goes too

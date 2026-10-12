@@ -1,15 +1,14 @@
-"""Local Cloud state paths and small non-secret config (plan §14).
+"""Local Cloud state paths and small non-secret config.
 
 Everything Cloud-related lives under %LOCALAPPDATA%\\StorageArch\\ -
 completely separate from the StorageArch business database
-(storage_config.db_path(), inside the user's chosen data_root). Cloud
+(the catalog inside the user's data folder). Cloud
 credentials are NEVER stored in that business database (task requirement) -
 this module owns Cloud's own small footprint instead.
 
-`STORAGEARCH_CLOUD_HOME` env var override exists only for tests (mirrors
-storage_config.py's own sandbox-friendly design, which uses the process cwd
-for the same reason) - production code never sets it, so it always resolves
-to the real per-user LOCALAPPDATA path.
+`STORAGEARCH_CLOUD_HOME` env var override exists only for tests -
+production code never sets it, so it always resolves to the real per-user
+LOCALAPPDATA path.
 """
 import json
 import os
@@ -63,7 +62,7 @@ def remote_config_lkg_path():
 
 
 def session_id():
-    """One random UUID per process lifetime (plan §6.2), cached after first
+    """One random UUID per process lifetime, cached after first
     call so every telemetry event this run emits shares the same value."""
     global _session_id
     if _session_id is None:
@@ -73,7 +72,7 @@ def session_id():
 
 _DEFAULT_CONFIG = {
     "installation_id": None,
-    "telemetry_enabled": False,  # OFF by default, plan §5.1
+    "telemetry_enabled": False,  # OFF by default
     "telemetry_changed_at_utc": None,
     "privacy_policy_version": _PRIVACY_POLICY_VERSION,
     "registered_at_utc": None,
@@ -109,7 +108,7 @@ def save_config(config):
 
 def reset_local_state():
     """Deletes all Cloud-local state (config, credentials, queues) - the
-    local half of plan §5.4's Uninstall requirement, and useful for test
+    local half of the Uninstall requirement, and useful for test
     teardown. Never touches the StorageArch business database, archives,
     or workspace - those are explicitly out of scope for this function."""
     for path_fn in (config_path, credentials_path, telemetry_queue_path, feedback_queue_path, crash_queue_path, remote_config_lkg_path):

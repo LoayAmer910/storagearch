@@ -10,6 +10,7 @@ OLD = "2020-01-01T00:00:00.000Z"
 
 def _add_old_row(module):
     q = module.open_queue()
+    q._ensure_schema()  # the file is created by the first row; this helper writes its row by hand
     conn = sqlite3.connect(q.db_path)
     conn.execute("INSERT INTO queue_items (item_key, payload_json, enqueued_at_utc) VALUES ('old', '{}', ?)", (OLD,))
     conn.commit()

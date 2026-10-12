@@ -1,12 +1,12 @@
-"""Privacy allowlist (plan §7-§8) - the client-side half of the same rule
-worker-public's cloud/schemas/src/privacy.ts enforces server-side.
+"""Privacy allowlist - the client-side half of the same rule
+the server enforces on its side.
 
 The PRIMARY defense here is structural, exactly like the backend: every
 payload in schemas.py is built by explicitly naming each allowed field one
 at a time (never `**vars(some_internal_object)` or similar blind
-passthrough) - plan §8's "never serialize a large internal object and then
+passthrough) - the "never serialize a large internal object and then
 try to remove unsafe fields". FORBIDDEN_FIELD_NAMES below is kept in sync
-with cloud/schemas/src/privacy.ts's own list, used only by tests to assert
+with the server's own list, used only by tests to assert
 none of these names is ever a key schemas.py could produce, and as a
 secondary defensive check in cloud_client.py right before a request leaves
 the machine (belt-and-suspenders, not the primary mechanism).
@@ -27,7 +27,7 @@ APPROVED_OPERATION_EVENT_TYPES = frozenset({
 
 APPROVED_EVENT_TYPES = APPROVED_APP_EVENT_TYPES | APPROVED_OPERATION_EVENT_TYPES
 
-# Mirrors cloud/schemas/src/privacy.ts's FORBIDDEN_FIELD_NAMES exactly.
+# Mirrors the server's FORBIDDEN_FIELD_NAMES exactly.
 FORBIDDEN_FIELD_NAMES = frozenset({
     "file_contents",
     "archive_contents",
@@ -64,12 +64,24 @@ FORBIDDEN_FIELD_NAMES = frozenset({
 })
 
 
+def _keys(value):
+    """Every field name in the payload, however deep: a forbidden field inside a nested object or a list of
+    objects is as much a leak as one at the top."""
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            yield key
+            yield from _keys(inner)
+    elif isinstance(value, (list, tuple)):
+        for inner in value:
+            yield from _keys(inner)
+
+
 def assert_no_forbidden_keys(payload):
     """Defensive check, not the primary mechanism (see module docstring).
     Raises ValueError if somehow triggered - a caller producing a payload
     with a forbidden key is a programming error that must be caught loudly
     in development, never silently "fixed" by stripping the field and
     sending the rest."""
-    bad = set(payload.keys()) & FORBIDDEN_FIELD_NAMES
+    bad = set(_keys(payload)) & FORBIDDEN_FIELD_NAMES
     if bad:
         raise ValueError(f"payload contains forbidden field name(s): {sorted(bad)}")

@@ -1,4 +1,4 @@
-"""Single background sender (plan §18): one dedicated thread, one HTTP
+"""Single background sender: one dedicated thread, one HTTP
 request at a time, priority Crash -> Feedback -> Telemetry, natural retry
 triggers instead of a tight loop, bounded shutdown.
 
@@ -54,7 +54,7 @@ class BackgroundSender:
         self._wake.set()
 
     def reconnect(self):
-        """Clears the auth-failure pause (plan §15.6: reconnect is manual)."""
+        """Clears the auth-failure pause (reconnect is manual)."""
         self._paused.clear()
         self.wake()
 
@@ -63,8 +63,7 @@ class BackgroundSender:
 
     def shutdown(self, timeout=SHUTDOWN_JOIN_SECONDS):
         """Stop accepting new work and wait AT MOST `timeout` seconds for
-        an in-flight request to finish - then return unconditionally
-        (plan §18.3). Unsent items simply remain queued for next launch."""
+        an in-flight request to finish - then return unconditionally. Unsent items simply remain queued for next launch."""
         self._stop.set()
         self._wake.set()
         thread = self._thread
@@ -88,7 +87,7 @@ class BackgroundSender:
         if self._paused.is_set():
             return
         # NOT gated on credentials being present: Feedback's Beta-Code
-        # fallback mode (plan §13.3) is sent unauthenticated and needs none
+        # fallback mode is sent unauthenticated and needs none
         # at all - only crash, telemetry, and installation_token-mode
         # feedback need a real installation. `_send_one` decides per item.
         credentials = self._get_credentials()
@@ -148,7 +147,7 @@ class BackgroundSender:
             return "retry_later"
 
         # Permanent payload failure (400 non-auth / 413 / unknown event) -
-        # plan §19: drop, safe local logging only, no infinite retry.
+        # drop, safe local logging only, no infinite retry.
         print(f"StorageArch Cloud: dropping unsendable {queue_name} item (status={result.status})")
         queue.remove(item.id)
         return "sent_or_dropped"

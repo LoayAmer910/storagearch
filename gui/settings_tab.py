@@ -79,9 +79,8 @@ class SettingsTab(QWidget):
         size_layout.addWidget(save_size_button)
         size_box.setLayout(size_layout)
 
-        # C5-C7: Cloud (Development Beta) - entirely optional, OFF by
-        # default, never required for normal local use. See
-        # local_cloud/ and CLOUD_OPERATOR_GUIDE.md.
+        # Cloud - entirely optional, OFF by default, never required for
+        # normal local use. See local_cloud/.
         self.cloud_status_label = QLabel()
         self.cloud_status_label.setWordWrap(True)
 

@@ -1,4 +1,4 @@
-"""Runtime queue age-based retention (plan §17: telemetry/crash 30-day
+"""Runtime queue age-based retention (telemetry/crash 30-day
 max age; feedback has no age limit by design). `PersistentQueue.prune_expired()`
 already encodes the actual rule per queue (it's a no-op when a queue's
 `max_age_days` is None, e.g. feedback) - this module's only job is to

@@ -1,13 +1,10 @@
-"""Low-level HTTPS client for the Cloud backend (plan §18.2, §20-§21) -
-Development or Beta, whichever `build_channel.BASE_URL` was set to at
-build time. Stdlib `urllib.request` only - no new HTTP dependency needed
+"""Low-level HTTPS client for the Cloud backend - the one
+`build_channel.BASE_URL` was set to at build time. Stdlib `urllib.request` only - no new HTTP dependency needed
 for this. Every call has a short, bounded timeout; nothing here can hang
-StorageArch (plan: "Cloud timeout protection" / "no unconditional network-
-thread join").
+StorageArch, and no caller waits for a network thread without a limit.
 
-BASE_URL is fixed at build/checkout time (plan §23, see build_channel.py) -
-never a user-facing setting, matching "A Development Build cannot
-accidentally send to Beta" (and vice versa).
+BASE_URL is fixed at build/checkout time - never a user-facing setting, so
+a build for one environment cannot send to another.
 """
 import json
 import urllib.error
@@ -31,8 +28,8 @@ class CloudResult:
     """`status` is an HTTP status code on any real response from the
     server, or one of the synthetic strings below when the request never
     got a response at all - callers (BackgroundSender) treat both
-    "network_error" and "timeout" as retryable, matching plan §19's
-    Temporary/Retryable category."""
+    "network_error" and "timeout" as retryable, the temporary,
+    retryable kind of failure."""
 
     NETWORK_ERROR = "network_error"
     TIMEOUT = "timeout"
@@ -76,7 +73,7 @@ def _do_request(method, url, headers, body_text):
 
 
 def get_public(path):
-    """Unauthenticated read (plan §21: config/release metadata) - never
+    """Unauthenticated read (config/release metadata) - never
     includes installation_id/session_id/any per-installation data."""
     return _do_request("GET", BASE_URL + path, {"Accept": "application/json"}, None)
 
@@ -98,9 +95,8 @@ def post_signed(path, body_dict, credentials):
 
 def post_unsigned(path, body_dict):
     """Unauthenticated POST - the ONLY mutation path that doesn't need
-    installation credentials at all: Feedback's Beta-Code fallback mode
-    (plan §13.3), matching the backend's own handleBetaCodeFeedback, which
-    is gated by the request NOT carrying the C2B signed-header set. Used
+    installation credentials at all: Feedback's Beta-Code fallback mode, matching the backend's own handleBetaCodeFeedback, which
+    is gated by the request NOT carrying the signed-header set. Used
     for nothing else - crash reports and telemetry always require a real
     installation and are always sent via post_signed."""
     body_text = json.dumps(body_dict)
