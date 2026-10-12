@@ -146,3 +146,51 @@ def test_a_worker_whose_parent_leaves_mid_task_exits_without_an_error(src, tmp_p
     PARENT_GONE.set()
     thread.join(5)
     assert not thread.is_alive()
+
+
+class _PipeOfADeadProcess:
+    """A worker's pipe as Windows shows it when the process died just before it was asked for an answer:
+    the question itself fails (WinError 109), it is not answered with 'nothing yet'."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def poll(self, timeout=0.0):
+        raise BrokenPipeError(109, "The pipe has been ended")
+
+    def send(self, message):
+        self._conn.send(message)
+
+    def recv(self):
+        raise EOFError  # reading a pipe whose process is gone
+
+    def close(self):
+        self._conn.close()
+
+
+def test_a_worker_that_died_just_before_it_was_asked_is_reported_as_crashed(pool, src, tmp_path, monkeypatch):
+    take = pool._take
+
+    def take_one_that_dies():
+        worker = take()
+        worker.conn = _PipeOfADeadProcess(worker.conn)
+        return worker
+    monkeypatch.setattr(pool, "_take", take_one_that_dies)
+    result = pool.run(fakes.Fake(), src, str(tmp_path), "sha", 5)
+    assert result == {"status": candidate.CRASHED, "detail": "worker process died"}
+    assert pool.live_pids() == set() and live_children() == []
+    monkeypatch.undo()
+    os.makedirs(tmp_path / "next")
+    assert pool.run(fakes.Fake(), src, str(tmp_path / "next"), "sha", 5)["status"] != candidate.CRASHED  # the pool goes on
+
+
+def test_a_worker_whose_pipe_breaks_while_it_starts_is_reported_as_crashed(pool, src, tmp_path, monkeypatch):
+    real = workers._CTX.Pipe
+
+    def broken_pipe():
+        parent, child = real()
+        return _PipeOfADeadProcess(parent), child
+    monkeypatch.setattr(workers._CTX, "Pipe", broken_pipe)
+    result = pool.run(fakes.Fake(), src, str(tmp_path), "sha", 5)
+    assert result == {"status": candidate.CRASHED, "detail": "no worker process could be started"}
+    assert pool.live_pids() == set() and live_children() == []

@@ -39,6 +39,16 @@ def _worker_main(conn):
             return
 
 
+def _has_message(conn):
+    """Waits a short slice for a message. A pipe whose process is gone counts as having one: on Windows
+    asking such a pipe fails (WinError 109) when the process died just before the question, and the read
+    that follows reports the death the same way as when it dies during the wait."""
+    try:
+        return conn.poll(_POLL_S)
+    except (EOFError, OSError):
+        return True
+
+
 class _Worker:
     def __init__(self):
         self.conn, child = _CTX.Pipe()
@@ -47,7 +57,7 @@ class _Worker:
         child.close()
         self.pid = self.process.pid
         deadline = time.monotonic() + READY_TIMEOUT_S
-        while not self.conn.poll(_POLL_S):
+        while not _has_message(self.conn):
             if not self.process.is_alive() or time.monotonic() > deadline:
                 self.kill()
                 raise RuntimeError("worker process did not start")
@@ -112,7 +122,7 @@ class WorkerPool:
                 return {"status": candidate.ERROR, "detail": f"could not hand the task to a worker: {exc}"[:500]}
             deadline = time.monotonic() + timeout_s
             while True:
-                if worker.conn.poll(_POLL_S):
+                if _has_message(worker.conn):
                     try:
                         got_id, result = worker.conn.recv()
                     except (EOFError, OSError):
