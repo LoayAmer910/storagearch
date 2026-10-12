@@ -19,8 +19,8 @@ ever reads an env var or a setting to pick a server.
 """
 
 RELEASE_CHANNEL = "beta"
-APP_VERSION = "1.0.1"       # the same number as core.CORE_VERSION (tests/test_version.py)
-BUILD_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"       # the same number as core.CORE_VERSION (tests/test_version.py)
+BUILD_VERSION = "1.0.2"
 
 BASE_URL = "https://storagearch-api-beta.storagearch-worker-public.workers.dev"
 
