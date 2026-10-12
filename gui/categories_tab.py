@@ -65,8 +65,8 @@ class CategoriesTab(QWidget):
 
         item_counts = {}
         for archive in archives:
-            category_name = archive[1]
-            item_counts[category_name] = item_counts.get(category_name, 0) + archive[5]
+            category_name = archive.category_name
+            item_counts[category_name] = item_counts.get(category_name, 0) + archive.item_count
 
         self.table.setRowCount(len(categories))
         for row_index, category in enumerate(categories):
@@ -143,10 +143,10 @@ class CategoriesTab(QWidget):
             return
 
         current_values = {
-            "name": category[1],
-            "description": category[2],
-            "color": category[3],
-            "max_archive_size": category[4],
+            "name": category.name,
+            "description": category.description,
+            "color": category.color,
+            "max_archive_size": category.max_archive_size,
         }
         existing_names = {
             self.table.item(row, 0).text()

@@ -193,7 +193,7 @@ def create_category(category_name, description=None, color=None, max_archive_siz
     row = cat.category_by_name(category_name)
     if row is None:
         return False
-    os.makedirs(os.path.join(config.archives_dir(), row[6]), exist_ok=True)
+    os.makedirs(os.path.join(config.archives_dir(), row.folder_name), exist_ok=True)
     return True
 
 
@@ -207,7 +207,7 @@ def delete_category(category_id):
     result = cat.delete_category(category_id)
     if result == "DELETED" and row is not None:
         try:
-            os.rmdir(os.path.join(config.archives_dir(), row[6]))
+            os.rmdir(os.path.join(config.archives_dir(), row.folder_name))
         except OSError:
             pass
     return result
@@ -253,11 +253,12 @@ def find_duplicate(content_hash):
     row = _cat().find_item_by_hash(content_hash)
     if row is None:
         return None
-    return _duplicate_info(row, _verify_item(row[0]))
+    return _duplicate_info(row, _verify_item(row.id))
 
 
 def _duplicate_info(row, status):
-    return {"item_name": row[1], "category": row[8], "archive": row[7], "path_in_archive": row[3], "status": status}
+    return {"item_name": row.file_name, "category": row.category_name, "archive": row.archive_path,
+            "path_in_archive": row.path_in_archive, "status": status}
 
 
 def _verify_item(item_id):
@@ -275,8 +276,8 @@ def _verify_archive_row(archive_id, row, members=None):
     state = cat.archive_state(archive_id)
     sealed = state["zip_hash"] if state["state"] == "sealed" else None
     known = [m["path_in_archive"] for m in cat.members_of_archive(archive_id, live_only=False)]
-    status = store.verify_archive(row[3], cat.members_of_archive(archive_id) if members is None else members,
-                                  sealed, expected_size=row[4], known_names=known)
+    status = store.verify_archive(row.file_path, cat.members_of_archive(archive_id) if members is None else members,
+                                  sealed, expected_size=row.current_size, known_names=known)
     if status == "CHANGED" and _repair_open_archive(archive_id):
         return _verify_archive_row(archive_id, cat.archive_by_id(archive_id), members)
     return status
@@ -290,26 +291,26 @@ def _repair_open_archive(archive_id):
     cat = _cat()
     with _write_lock:
         row, state = cat.archive_by_id(archive_id), cat.archive_state(archive_id)
-        if row is None or state["state"] != "open" or not os.path.exists(row[3]):
+        if row is None or state["state"] != "open" or not os.path.exists(row.file_path):
             return False
         live = cat.members_of_archive(archive_id)
-        if not store.ends_cleanly(row[3]) or store.verify_archive(row[3], live) != "VERIFIED":
+        if not store.ends_cleanly(row.file_path) or store.verify_archive(row.file_path, live) != "VERIFIED":
             return False
         known = {m["path_in_archive"] for m in cat.members_of_archive(archive_id, live_only=False)}
-        unknown = sorted(store.entry_names(row[3]) - known)
-        if not unknown and os.path.getsize(row[3]) == row[4]:
+        unknown = sorted(store.entry_names(row.file_path) - known)
+        if not unknown and os.path.getsize(row.file_path) == row.current_size:
             return False
-        category = cat.category_by_id(row[1])
+        category = cat.category_by_id(row.category_id)
         try:
             if unknown:
                 log.warning("%s held %d entries the catalog never recorded (an interrupted write); removed: %s",
-                            row[3], len(unknown), unknown[:5])
+                            row.file_path, len(unknown), unknown[:5])
                 _compact(archive_id, category)
             else:
-                log.warning("the recorded size of %s had fallen behind the file; corrected", row[3])
+                log.warning("the recorded size of %s had fallen behind the file; corrected", row.file_path)
                 _refresh_old_archive(archive_id, category)
         except (store.StoreError, OSError, sqlite3.Error) as exc:
-            log.error("%s could not be repaired: %s", row[3], exc)
+            log.error("%s could not be repaired: %s", row.file_path, exc)
             return False
         return True
 
@@ -448,7 +449,7 @@ _SEQ = re.compile(r"_(\d+)\.zip$", re.IGNORECASE)
 def _choose_archive(category, incoming_bytes):
     """An open archive of the category with room for the incoming bytes, else a new one."""
     cat = _cat()
-    category_id, max_size, folder = category[0], category[4], category[6]
+    category_id, max_size, folder = category.id, category.max_archive_size, category.folder_name
     for archive_id, zip_path, _size in cat.open_archives(category_id):
         actual = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
         if actual == 0 or actual + incoming_bytes <= max_size:
@@ -456,7 +457,7 @@ def _choose_archive(category, incoming_bytes):
         _seal(archive_id, zip_path, category)  # full: its content is final from now on
     folder_path = os.path.join(config.archives_dir(), folder)
     os.makedirs(folder_path, exist_ok=True)
-    used = {int(m.group(1)) for a in cat.archives_of_category(category_id) if (m := _SEQ.search(a[2]))}
+    used = {int(m.group(1)) for a in cat.archives_of_category(category_id) if (m := _SEQ.search(a.file_name))}
     used |= {int(m.group(1)) for f in os.listdir(folder_path) if (m := _SEQ.search(f))}
     seq = max(used, default=0) + 1
     zip_path = os.path.join(folder_path, f"{folder}_{seq:03d}.zip")
@@ -494,7 +495,7 @@ def _seal(archive_id, zip_path, category):
     file_sha = store.sha256_file(zip_path)
     cat.seal_archive(archive_id, file_sha)
     state = cat.archive_state(archive_id)
-    manifest = store.write_manifest(zip_path, category[1], cat.members_of_archive(archive_id), state["members_digest"],
+    manifest = store.write_manifest(zip_path, category.name, cat.members_of_archive(archive_id), state["members_digest"],
                                     "sealed", file_sha)
     cat.set_archive_file_facts(archive_id, os.path.getsize(zip_path), manifest)
 
@@ -538,10 +539,10 @@ def _after_write(archive_id, zip_path, category):
     members = cat.members_of_archive(archive_id)
     state = cat.archive_state(archive_id)
     cat.set_archive_status(archive_id, "VERIFIED")
-    if state["state"] == "open" and size >= category[4] > 0:
+    if state["state"] == "open" and size >= category.max_archive_size > 0:
         _seal(archive_id, zip_path, category)
         return
-    manifest = store.write_manifest(zip_path, category[1], members, state["members_digest"], state["state"], state["zip_hash"])
+    manifest = store.write_manifest(zip_path, category.name, members, state["members_digest"], state["state"], state["zip_hash"])
     cat.set_archive_file_facts(archive_id, size, manifest)
 
 
@@ -656,7 +657,7 @@ def _save_again(item_id, path, strict):
     entries that are skipped (links, cloud files) is not saved, as when it is archived."""
     item = _cat().item_by_id(item_id)
     state = _state_of(path)
-    if item[2] == "folder":
+    if item.file_type == "folder":
         entries, skipped = folders.scan(path)
         if skipped and strict:
             return None
@@ -665,7 +666,7 @@ def _save_again(item_id, path, strict):
     else:
         entries, scanned = None, scan_file(path)
         new_hash = scanned[0].sha256
-    if new_hash == item[8]:
+    if new_hash == item.original_hash:
         return state, None
     reason, stats = _store_new_version(item_id, path, entries, scanned, new_hash)
     return None if reason else (state, stats)
@@ -688,7 +689,7 @@ def _remove_source(result, item_id, path, state, action):
 
 
 def _duplicate_result(row):
-    status = _verify_item(row[0])
+    status = _verify_item(row.id)
     if status == "VERIFIED":
         return {"success": True, "reason": "DUPLICATE", "message": "Duplicate content already exists - not saved again",
                 "duplicate": _duplicate_info(row, status)}
@@ -899,8 +900,8 @@ def _checkout(item_id, destination):
     item = cat.item_by_id(item_id)
     if item is None:
         return None, "ITEM_NOT_FOUND"
-    if item[10] == "CHECKED_OUT":
-        return (os.path.normpath(item[11]) if item[11] else None), None
+    if item.status == "CHECKED_OUT":
+        return (os.path.normpath(item.workspace_path) if item.workspace_path else None), None
     zip_path = cat.archive_path_of_item(item_id)
     members = cat.members_of_item(item_id)
     if not zip_path or not members:
@@ -958,9 +959,9 @@ def _checkin(item_id, remove_workspace_copy):
     item = cat.item_by_id(item_id)
     if item is None:
         return False, "ITEM_NOT_FOUND", None
-    if item[10] != "CHECKED_OUT":
+    if item.status != "CHECKED_OUT":
         return False, "NOT_CHECKED_OUT", None
-    workspace = item[11]
+    workspace = item.workspace_path
     if not workspace or not os.path.exists(workspace):
         # the checked-out copy is gone (deleted by the user): the archived version is untouched, so the item goes
         # back to it - otherwise it could neither be checked in nor checked out again. The caller tells the user.
@@ -968,14 +969,14 @@ def _checkin(item_id, remove_workspace_copy):
         return True, "WORKSPACE_COPY_MISSING", None
     removable = remove_workspace_copy and _is_removable_copy(workspace)
     state = _state_of(workspace) if removable else None
-    if item[2] == "folder":
+    if item.file_type == "folder":
         entries, _skipped = folders.scan(workspace)
         scanned = _scan_many(entries)
         new_hash = _folder_digest(entries, scanned)
     else:
         entries, scanned = None, scan_file(workspace)
         new_hash = scanned[0].sha256
-    unchanged = new_hash == item[8]
+    unchanged = new_hash == item.original_hash
     stats = None
     if not unchanged:
         reason, stats = _store_new_version(item_id, workspace, entries, scanned, new_hash)
@@ -1001,8 +1002,8 @@ def _store_new_version(item_id, path, entries, scanned, new_hash):
     cat = _cat()
     item = cat.item_by_id(item_id)
     is_folder = entries is not None
-    category = cat.category_by_id(cat.archive_by_id(item[1])[1])
-    old_archive_id = item[1]
+    category = cat.category_by_id(cat.archive_by_id(item.archive_id).category_id)
+    old_archive_id = item.archive_id
     uid = f"{cat.item_uid(item_id)}.{Catalog.new_uid()[:6]}"
     root_name = paths.bare_name(os.path.basename(os.path.normpath(path)), fallback="folder" if is_folder else "item")
     kept = {}
@@ -1057,8 +1058,8 @@ def _checkin_archive(old_archive_id, category, incoming):
     cat = _cat()
     state = cat.archive_state(old_archive_id)
     row = cat.archive_by_id(old_archive_id)
-    if state["state"] == "open" and os.path.getsize(row[3]) + incoming <= category[4]:
-        return old_archive_id, row[3]
+    if state["state"] == "open" and os.path.getsize(row.file_path) + incoming <= category.max_archive_size:
+        return old_archive_id, row.file_path
     return _choose_archive(category, incoming)
 
 
@@ -1066,9 +1067,9 @@ def _refresh_old_archive(archive_id, category):
     cat = _cat()
     row = cat.archive_by_id(archive_id)
     state = cat.archive_state(archive_id)
-    manifest = store.write_manifest(row[3], category[1], cat.members_of_archive(archive_id), state["members_digest"],
+    manifest = store.write_manifest(row.file_path, category.name, cat.members_of_archive(archive_id), state["members_digest"],
                                     state["state"], state["zip_hash"])
-    cat.set_archive_file_facts(archive_id, os.path.getsize(row[3]), manifest)
+    cat.set_archive_file_facts(archive_id, os.path.getsize(row.file_path), manifest)
 
 
 def _compact_if_worth_it(archive_id, category):
@@ -1077,9 +1078,9 @@ def _compact_if_worth_it(archive_id, category):
     cat = _cat()
     state = cat.archive_state(archive_id)
     row = cat.archive_by_id(archive_id)
-    if state["state"] != "open" or not os.path.exists(row[3]):
+    if state["state"] != "open" or not os.path.exists(row.file_path):
         return
-    if state["dead_bytes"] < COMPACT_DEAD_RATIO * max(os.path.getsize(row[3]), 1):
+    if state["dead_bytes"] < COMPACT_DEAD_RATIO * max(os.path.getsize(row.file_path), 1):
         return
     _compact(archive_id, category)
 
@@ -1087,8 +1088,8 @@ def _compact_if_worth_it(archive_id, category):
 def _compact(archive_id, category):
     cat = _cat()
     row = cat.archive_by_id(archive_id)
-    facts = store.compact(row[3], cat.members_of_archive(archive_id))
-    cat.record_compaction(archive_id, facts, os.path.getsize(row[3]))
+    facts = store.compact(row.file_path, cat.members_of_archive(archive_id))
+    cat.record_compaction(archive_id, facts, os.path.getsize(row.file_path))
     _refresh_old_archive(archive_id, category)
 
 
@@ -1128,11 +1129,11 @@ def verify_category(category_name):
     row = cat.category_by_name(category_name)
     if row is None:
         return {}
-    return {a[2]: verify_archive_by_id(a[0]) for a in cat.archives_of_category(row[0])}
+    return {a.file_name: verify_archive_by_id(a.id) for a in cat.archives_of_category(row.id)}
 
 
 def verify_all():
-    return {c[1]: verify_category(c[1]) for c in list_categories()}
+    return {c.name: verify_category(c.name) for c in list_categories()}
 
 
 # --- telemetry -----------------------------------------------------------------------------------------

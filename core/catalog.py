@@ -14,6 +14,7 @@ import sqlite3
 import threading
 import urllib.parse
 import uuid
+from collections import namedtuple
 from contextlib import contextmanager
 
 SCHEMA_VERSION = 2
@@ -98,6 +99,21 @@ _ITEM_COLUMNS = ("id, archive_id, file_type, file_name, original_path, path_in_a
                  "checked_out_at, checked_in_at, strategy")
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
 
+# Rows leave the catalog with named fields (row.status instead of row[10]): a column added or moved later
+# cannot silently shift what a number means. They are tuples, so reading by position and comparing with a
+# plain tuple work as before.
+CategoryRow = namedtuple("CategoryRow", _CATEGORY_COLUMNS.replace(",", " "))
+ArchiveRow = namedtuple("ArchiveRow", _ARCHIVE_COLUMNS.replace(",", " "))
+ItemRow = namedtuple("ItemRow", _ITEM_COLUMNS.replace(",", " "))
+ListedArchive = namedtuple("ListedArchive", "id category_name file_name file_path current_size item_count "
+                                            "integrity_status last_verified_at")
+OpenArchive = namedtuple("OpenArchive", "id file_path current_size")
+FoundItem = namedtuple("FoundItem", "id file_name file_type path_in_archive original_path archive_id "
+                                    "archive_file_name archive_path category_name status")
+SearchedItem = namedtuple("SearchedItem", "id file_name file_type path_in_archive original_path original_size "
+                                          "compressed_size status category_name archive_file_name archive_path")
+CheckedOutItem = namedtuple("CheckedOutItem", "id file_name file_type path_in_archive workspace_path")
+
 
 class LegacyDatabaseError(RuntimeError):
     """The database was written by the old version; it is not opened for writing."""
@@ -159,13 +175,16 @@ class Catalog:
                 db.execute("ROLLBACK")
                 raise
 
-    def _one(self, sql, args=()):
+    def _one(self, sql, args=(), row=None):
+        """The first result, as a `row` (one of the named rows above) when one is given."""
         with self._connect() as db:
-            return db.execute(sql, args).fetchone()
+            found = db.execute(sql, args).fetchone()
+        return row._make(found) if row is not None and found is not None else found
 
-    def _all(self, sql, args=()):
+    def _all(self, sql, args=(), row=None):
         with self._connect() as db:
-            return db.execute(sql, args).fetchall()
+            found = db.execute(sql, args).fetchall()
+        return [row._make(r) for r in found] if row is not None else found
 
     # --- categories ----------------------------------------------------------------------------------
 
@@ -189,13 +208,13 @@ class Catalog:
             return cur.lastrowid
 
     def category_by_name(self, name):
-        return self._one(f"SELECT {_CATEGORY_COLUMNS} FROM categories WHERE name = ?", (name,))
+        return self._one(f"SELECT {_CATEGORY_COLUMNS} FROM categories WHERE name = ?", (name,), CategoryRow)
 
     def category_by_id(self, category_id):
-        return self._one(f"SELECT {_CATEGORY_COLUMNS} FROM categories WHERE id = ?", (category_id,))
+        return self._one(f"SELECT {_CATEGORY_COLUMNS} FROM categories WHERE id = ?", (category_id,), CategoryRow)
 
     def list_categories(self):
-        return self._all(f"SELECT {_CATEGORY_COLUMNS} FROM categories ORDER BY name")
+        return self._all(f"SELECT {_CATEGORY_COLUMNS} FROM categories ORDER BY name", row=CategoryRow)
 
     def update_category(self, category_id, name, description=None, color=None, max_archive_size=DEFAULT_MAX_ARCHIVE_SIZE):
         if not isinstance(name, str) or not name.strip() or not _non_negative_int(max_archive_size):
@@ -230,24 +249,26 @@ class Catalog:
             return cur.lastrowid
 
     def archive_by_id(self, archive_id):
-        return self._one(f"SELECT {_ARCHIVE_COLUMNS} FROM archives WHERE id = ?", (archive_id,))
+        return self._one(f"SELECT {_ARCHIVE_COLUMNS} FROM archives WHERE id = ?", (archive_id,), ArchiveRow)
 
     def archive_state(self, archive_id):
         row = self._one("SELECT state, members_digest, dead_bytes, zip_hash FROM archives WHERE id = ?", (archive_id,))
         return None if row is None else {"state": row[0], "members_digest": row[1], "dead_bytes": row[2], "zip_hash": row[3]}
 
     def archives_of_category(self, category_id):
-        return self._all(f"SELECT {_ARCHIVE_COLUMNS} FROM archives WHERE category_id = ? ORDER BY file_name", (category_id,))
+        return self._all(f"SELECT {_ARCHIVE_COLUMNS} FROM archives WHERE category_id = ? ORDER BY file_name", (category_id,),
+                         ArchiveRow)
 
     def list_archives(self):
         return self._all(
             "SELECT archives.id, categories.name, archives.file_name, archives.file_path, archives.current_size, "
             "archives.item_count, archives.integrity_status, archives.last_verified_at FROM archives "
-            "JOIN categories ON archives.category_id = categories.id ORDER BY categories.name, archives.file_name")
+            "JOIN categories ON archives.category_id = categories.id ORDER BY categories.name, archives.file_name",
+            row=ListedArchive)
 
     def open_archives(self, category_id):
         return self._all("SELECT id, file_path, current_size FROM archives WHERE category_id = ? AND state = 'open' "
-                         "ORDER BY file_name", (category_id,))
+                         "ORDER BY file_name", (category_id,), OpenArchive)
 
     def set_archive_status(self, archive_id, status):
         if status not in ARCHIVE_STATUSES:
@@ -438,7 +459,7 @@ class Catalog:
             db.execute("UPDATE archives SET dead_bytes = 0 WHERE id = ?", (archive_id,))
 
     def item_by_id(self, item_id):
-        return self._one(f"SELECT {_ITEM_COLUMNS} FROM items WHERE id = ?", (item_id,))
+        return self._one(f"SELECT {_ITEM_COLUMNS} FROM items WHERE id = ?", (item_id,), ItemRow)
 
     def item_uid(self, item_id):
         row = self._one("SELECT uid FROM items WHERE id = ?", (item_id,))
@@ -454,7 +475,7 @@ class Catalog:
             "SELECT items.id, items.file_name, items.file_type, items.path_in_archive, items.original_path, archives.id, "
             "archives.file_name, archives.file_path, categories.name, items.status FROM items "
             "JOIN archives ON items.archive_id = archives.id JOIN categories ON archives.category_id = categories.id "
-            "WHERE items.original_hash = ? ORDER BY items.id LIMIT 1", (original_hash,))
+            "WHERE items.original_hash = ? ORDER BY items.id LIMIT 1", (original_hash,), FoundItem)
 
     def search_items(self, text, category_name=None, extension=None):
         query = ("SELECT items.id, items.file_name, items.file_type, items.path_in_archive, items.original_path, "
@@ -468,7 +489,7 @@ class Catalog:
         if extension:
             query += " AND items.file_name LIKE ? ESCAPE '\\'"
             params.append(f"%{_escape_like(extension)}")
-        return self._all(query + " ORDER BY items.id", tuple(params))
+        return self._all(query + " ORDER BY items.id", tuple(params), SearchedItem)
 
     def set_item_status(self, item_id, status, workspace_path=None):
         if status not in ITEM_STATUSES:
@@ -483,7 +504,7 @@ class Catalog:
 
     def checked_out_items(self):
         return self._all("SELECT id, file_name, file_type, path_in_archive, workspace_path FROM items "
-                         "WHERE status = 'CHECKED_OUT' ORDER BY id")
+                         "WHERE status = 'CHECKED_OUT' ORDER BY id", row=CheckedOutItem)
 
     def dashboard_summary(self):
         with self._connect() as db:

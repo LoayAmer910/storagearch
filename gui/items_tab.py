@@ -145,7 +145,7 @@ class ItemsTab(QWidget):
         self.category_filter.clear()
         self.category_filter.addItem("All categories", None)
         for category in categories:
-            self.category_filter.addItem(category[1], category[1])
+            self.category_filter.addItem(category.name, category.name)
         restored_index = self.category_filter.findData(current_filter)
         self.category_filter.setCurrentIndex(restored_index if restored_index >= 0 else 0)
         self.category_filter.blockSignals(False)
@@ -153,7 +153,7 @@ class ItemsTab(QWidget):
         self.destination_category.blockSignals(True)
         self.destination_category.clear()
         for category in categories:
-            self.destination_category.addItem(category[1])
+            self.destination_category.addItem(category.name)
         restored_dest = self.destination_category.findText(current_dest)
         if restored_dest >= 0:
             self.destination_category.setCurrentIndex(restored_dest)
@@ -423,7 +423,7 @@ class ItemsTab(QWidget):
             QMessageBox.warning(self, "Verify", "Item no longer exists.")
             self.main_window.refresh_all()
             return
-        archive_id = item[1]
+        archive_id = item.archive_id
 
         self.main_window.set_busy(True, "Verifying archive...")
         self._thread, self._worker = run_in_background(

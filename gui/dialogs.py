@@ -156,9 +156,9 @@ class PendingCheckoutsDialog(QDialog):
         info.setWordWrap(True)
 
         self.list_widget = QListWidget()
-        for item in pending_items:
-            list_item = QListWidgetItem(f"{item[1]}  ({item[4]})")
-            list_item.setData(Qt.UserRole, item[0])
+        for item_id, name, _kind, _path_in_archive, workspace_path in pending_items:
+            list_item = QListWidgetItem(f"{name}  ({workspace_path})")
+            list_item.setData(Qt.UserRole, item_id)
             list_item.setCheckState(Qt.Checked)
             self.list_widget.addItem(list_item)
 
