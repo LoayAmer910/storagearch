@@ -59,6 +59,7 @@ def main():
     os.makedirs(work, exist_ok=True)
     os.chdir(work)
     os.environ["STORAGEARCH_HOME"] = work  # a packaged build keeps its data next to its exe file; not this test
+    os.environ["STORAGEARCH_CLOUD_HOME"] = os.path.join(work, "cloud_home")  # never the cloud state of the real user
     from core import api, tools
 
     print("frozen:", getattr(sys, "frozen", False), "| JPEG XL tools:", tools.available("cjxl", "djxl")[0])

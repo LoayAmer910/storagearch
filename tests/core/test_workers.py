@@ -175,11 +175,11 @@ def test_a_worker_that_died_just_before_it_was_asked_is_reported_as_crashed(pool
         worker = take()
         worker.conn = _PipeOfADeadProcess(worker.conn)
         return worker
-    monkeypatch.setattr(pool, "_take", take_one_that_dies)
-    result = pool.run(fakes.Fake(), src, str(tmp_path), "sha", 5)
+    with monkeypatch.context() as dying:
+        dying.setattr(pool, "_take", take_one_that_dies)
+        result = pool.run(fakes.Fake(), src, str(tmp_path), "sha", 5)
     assert result == {"status": candidate.CRASHED, "detail": "worker process died"}
     assert pool.live_pids() == set() and live_children() == []
-    monkeypatch.undo()
     os.makedirs(tmp_path / "next")
     assert pool.run(fakes.Fake(), src, str(tmp_path / "next"), "sha", 5)["status"] != candidate.CRASHED  # the pool goes on
 

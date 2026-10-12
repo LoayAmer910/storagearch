@@ -31,12 +31,20 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
+          cache-dependency-path: requirements-lock.txt
 
       - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt pyinstaller==6.22.2
+        run: python -m pip install --require-hashes -r requirements-lock.txt
+
+      - name: The tag is the version in the code
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = python -c "import core; print(core.CORE_VERSION)"
+          $tag = "${{ github.ref_name }}"
+          if (-not ($tag -eq "v$version" -or $tag.StartsWith("v$version-"))) {
+            throw "the tag $tag does not match the version in the code ($version)"
+          }
 
       - name: JPEG XL tools (libjxl v0.12.0, checked against a known hash)
         shell: pwsh

@@ -270,11 +270,11 @@ class BetaCodeDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Connect to StorageArch Cloud (Development Beta)")
+        self.setWindowTitle("Connect to StorageArch Cloud")
 
         info = QLabel(
-            "Enter the Development Beta Code to connect this installation to the "
-            "StorageArch Cloud (Development). This is optional - StorageArch works "
+            "Enter your access code to connect this installation to the "
+            "StorageArch Cloud. This is optional - StorageArch works "
             "fully offline without it."
         )
         info.setWordWrap(True)
@@ -283,7 +283,7 @@ class BetaCodeDialog(QDialog):
         self.code_edit.setEchoMode(QLineEdit.Password)
 
         form = QFormLayout()
-        form.addRow("Beta Code:", self.code_edit)
+        form.addRow("Access code:", self.code_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)

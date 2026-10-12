@@ -305,7 +305,7 @@ def test_a_critical_release_is_marked_critical_and_never_installed(gui_window, q
     gui_window.settings_tab._check_for_updates()
     wait_idle(qtbot, gui_window)
     text = last_message(message_boxes)[2]
-    assert text.startswith("Latest Development release: 2.1.0 (build 42) (CRITICAL)")
+    assert text.startswith("Latest release: 2.1.0 (build 42) (CRITICAL)")
     assert "never downloads or installs updates automatically" in text
 
 
@@ -324,6 +324,24 @@ def test_a_slow_update_check_does_not_freeze_the_window(gui_window, qtbot, monke
     answer.set()
     wait_idle(qtbot, gui_window)
     assert len(message_boxes.calls) == before + 1 and "No release information" in last_message(message_boxes)[2]
+
+
+def test_nothing_the_user_reads_in_the_window_calls_this_release_a_beta_or_a_development_build(gui_window, monkeypatch):
+    from PySide6.QtWidgets import QAbstractButton, QGroupBox, QLabel
+
+    import gui.dialogs as dialogs
+    monkeypatch.setattr(main, "cloud_available", lambda: True)
+    texts = []
+    for registered in (False, True):
+        monkeypatch.setattr(main, "cloud_is_registered", lambda registered=registered: registered)
+        gui_window.settings_tab.refresh()
+        for window in (gui_window, dialogs.BetaCodeDialog(gui_window), dialogs.FeedbackDialog(gui_window)):
+            texts.append(window.windowTitle())
+            texts += [w.text() for w in window.findChildren(QLabel)] + [w.text() for w in window.findChildren(QAbstractButton)]
+            texts += [w.title() for w in window.findChildren(QGroupBox)]
+    assert len(texts) > 40
+    wrong = [t for t in texts if "beta" in t.lower() or "development" in t.lower()]
+    assert wrong == [], wrong
 
 
 # --- storage locations: changing your mind, and the workspace reset --------------------------------------

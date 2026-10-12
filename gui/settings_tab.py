@@ -88,7 +88,7 @@ class SettingsTab(QWidget):
         self.telemetry_checkbox = QCheckBox("Send anonymous diagnostics to help improve StorageArch (Telemetry)")
         self.telemetry_checkbox.toggled.connect(self._on_telemetry_toggled)
 
-        self.cloud_connect_button = QPushButton("Connect to Beta...")
+        self.cloud_connect_button = QPushButton("Connect to Cloud...")
         self.cloud_connect_button.clicked.connect(self._connect_cloud)
         self.cloud_disconnect_button = QPushButton("Disconnect")
         self.cloud_disconnect_button.clicked.connect(self._disconnect_cloud)
@@ -103,7 +103,7 @@ class SettingsTab(QWidget):
         cloud_buttons.addWidget(feedback_button)
         cloud_buttons.addWidget(check_updates_button)
 
-        cloud_box = QGroupBox("Cloud (Development Beta) - optional")
+        cloud_box = QGroupBox("Cloud - optional")
         cloud_layout = QVBoxLayout()
         cloud_layout.addWidget(self.cloud_status_label)
         cloud_layout.addWidget(self.telemetry_checkbox)
@@ -146,7 +146,7 @@ class SettingsTab(QWidget):
         self.cloud_disconnect_button.setEnabled(registered)
         self.telemetry_checkbox.setEnabled(registered)
         self.cloud_status_label.setText(
-            "Connected to StorageArch Cloud (Development)." if registered
+            "Connected to StorageArch Cloud." if registered
             else "Not connected. StorageArch works fully offline without connecting."
         )
 
@@ -166,9 +166,9 @@ class SettingsTab(QWidget):
             return
         success, error = main.cloud_register(code)
         if not success:
-            QMessageBox.warning(self, "Connect to Beta", f"Could not connect: {error or 'unknown error'}")
+            QMessageBox.warning(self, "Connect to Cloud", f"Could not connect: {error or 'unknown error'}")
             return
-        QMessageBox.information(self, "Connect to Beta", "Connected. Telemetry remains OFF until you enable it below.")
+        QMessageBox.information(self, "Connect to Cloud", "Connected. Telemetry remains OFF until you enable it below.")
         self._refresh_cloud_status()
 
     def _disconnect_cloud(self):
@@ -196,7 +196,7 @@ class SettingsTab(QWidget):
                 QMessageBox.information(self, "Send Feedback", "Cloud is not available in this build.")
                 return
             code_dialog = BetaCodeDialog(self)
-            code_dialog.setWindowTitle("Beta Code required to send Feedback")
+            code_dialog.setWindowTitle("Access code required to send Feedback")
             if code_dialog.exec() != BetaCodeDialog.Accepted:
                 return
             beta_code = code_dialog.beta_code()
@@ -237,7 +237,7 @@ class SettingsTab(QWidget):
         QMessageBox.information(
             self,
             "Check for Updates",
-            f"Latest Development release: {release.get('app_version')} (build {release.get('build_version')}){severity_note}\n\n"
+            f"Latest release: {release.get('app_version')} (build {release.get('build_version')}){severity_note}\n\n"
             "This is a notification only - StorageArch never downloads or installs updates automatically.",
         )
 

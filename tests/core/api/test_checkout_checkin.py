@@ -357,9 +357,9 @@ def test_checkout_of_a_tampered_stored_name_writes_nothing(app, reported):
 
 def test_checkout_and_checkin_wait_for_enough_free_space(app, reported, monkeypatch):
     item_id = _archived(app)
-    monkeypatch.setattr(api, "_enough_space", lambda needed: False)
-    assert api.checkout(item_id) is None and reported[-1] == "INSUFFICIENT_SPACE"
-    monkeypatch.undo()
+    with monkeypatch.context() as full_disk:  # never monkeypatch.undo(): it also undoes the test's cloud isolation
+        full_disk.setattr(api, "_enough_space", lambda needed: False)
+        assert api.checkout(item_id) is None and reported[-1] == "INSUFFICIENT_SPACE"
     ws = api.checkout(item_id)
     with open(ws, "a", encoding="utf-8") as f:
         f.write("edited\n")
