@@ -13,6 +13,7 @@ import unicodedata
 INVALID_NAME_CHARS = set('<>:"/\\|?*') | {chr(c) for c in range(32)}
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 MAX_PATH = 260
+MAX_FOLDER_PATH = 248  # Windows' ordinary limit for a folder: it leaves room for a short file name inside
 
 
 class ExtractionRefused(Exception):
@@ -107,6 +108,14 @@ def is_cloud_placeholder(path):
     if attrs in (-1, 0xFFFFFFFF):  # INVALID_FILE_ATTRIBUTES: ctypes returns it as a signed int (-1)
         return False
     return bool(attrs & (0x1000 | 0x40000 | 0x400000))  # OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS
+
+
+def too_long(path, folder=False):
+    """Why `path` is longer than Windows opens without special help, or None."""
+    limit = MAX_FOLDER_PATH if folder else MAX_PATH
+    if len(str(path)) >= limit:
+        return f"the path is too long ({len(str(path))} characters; Windows allows {MAX_PATH})"
+    return None
 
 
 def validate_source_path(path):

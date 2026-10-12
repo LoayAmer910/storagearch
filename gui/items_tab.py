@@ -32,6 +32,14 @@ def _in_use_message(path):
             f"Close it and try again.\n\n{path}")
 
 
+_CHECKOUT_FAILURES = {
+    "INSUFFICIENT_SPACE": "Checkout failed: there is not enough free space for this item.",
+    "PATH_TOO_LONG": "Checkout failed: the item's names are too long for the workspace folder (Windows allows 260 "
+                     "characters for a whole path).\nChoose a workspace location with a shorter path in Settings and try again.",
+    "TARGET_EXISTS": "Checkout failed: a file or folder with this name is already in the workspace.",
+}
+
+
 class ItemsTab(QWidget):
     """The Items tab: search, archive, check out, check in and verify items."""
 
@@ -351,15 +359,16 @@ class ItemsTab(QWidget):
 
         self.main_window.set_busy(True, "Checking out...")
         self._thread, self._worker = run_in_background(
-            self, main.checkout, self._on_checkout_done, self._on_action_failed, args=(item_id,)
+            self, main.checkout_result, self._on_checkout_done, self._on_action_failed, args=(item_id,)
         )
 
-    def _on_checkout_done(self, workspace_path):
+    def _on_checkout_done(self, result):
         self.main_window.set_busy(False)
-        if workspace_path is None:
-            QMessageBox.warning(self, "Checkout", "Checkout failed. Check available disk space and try again.")
+        if not result["success"]:
+            QMessageBox.warning(self, "Checkout", _CHECKOUT_FAILURES.get(
+                result["reason"], "Checkout failed. Check available disk space and try again."))
             return
-        QMessageBox.information(self, "Checkout", f"Item checked out to:\n{workspace_path}")
+        QMessageBox.information(self, "Checkout", f"Item checked out to:\n{result['path']}")
         self.main_window.refresh_all()
 
     def _checkin(self):

@@ -879,3 +879,15 @@ def test_a_verify_that_crashes_is_reported(gui_window, qtbot, monkeypatch, make_
     wait_idle(qtbot, gui_window)
     kind, title, text = last_message(message_boxes)[:3]
     assert (kind, title) == ("critical", "Operation failed") and "database is locked" in text
+
+
+def test_a_failed_checkout_tells_the_user_why(gui_window, message_boxes):
+    tab = gui_window.items_tab
+    told = {}
+    for reason in ("INSUFFICIENT_SPACE", "PATH_TOO_LONG", "TARGET_EXISTS", "SMART_RESTORE_ERROR"):
+        tab._on_checkout_done({"success": False, "path": None, "reason": reason})
+        kind, title, told[reason] = message_boxes.calls[-1][:3]
+        assert (kind, title) == ("warning", "Checkout")
+    assert "free space" in told["INSUFFICIENT_SPACE"] and "too long" in told["PATH_TOO_LONG"]
+    assert "already" in told["TARGET_EXISTS"] and told["SMART_RESTORE_ERROR"].startswith("Checkout failed")
+    assert len(set(told.values())) == 4  # each reason has its own words

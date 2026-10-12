@@ -32,11 +32,24 @@ def _is_link(path):
     return os.path.islink(path) or (hasattr(os.path, "isjunction") and os.path.isjunction(path))
 
 
+def _unreadable(exc):
+    """A folder that cannot be listed stops the scan: leaving its content out silently would make an archive
+    that looks whole and is not."""
+    folder = exc.filename or ""
+    problem = paths.too_long(folder, folder=True)
+    if problem:
+        raise paths.InvalidPathError(f"Cannot archive '{folder}': {problem}") from exc
+    if isinstance(exc, PermissionError):
+        raise paths.SourceInUseError(folder, exc.strerror or exc) from exc
+    raise paths.InvalidPathError(f"Cannot read '{folder}': {exc.strerror or exc}") from exc
+
+
 def scan(root):
-    """Returns (entries, skipped). Raises paths.InvalidPathError for a name that cannot be restored."""
+    """Returns (entries, skipped). Raises paths.InvalidPathError for a name that cannot be restored, or for a
+    folder inside that cannot be read (its path is too long, or access is denied)."""
     root = os.path.abspath(root)
     entries, skipped = [], []
-    for folder, dirs, files in os.walk(root, followlinks=False):
+    for folder, dirs, files in os.walk(root, followlinks=False, onerror=_unreadable):
         dirs.sort()
         files.sort()
         rel_folder = os.path.relpath(folder, root).replace(os.sep, "/")

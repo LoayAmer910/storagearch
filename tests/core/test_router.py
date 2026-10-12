@@ -137,3 +137,14 @@ def test_the_same_file_gets_the_same_decision_under_load(samples, tmp_path):
                 assert len(seen) == 1, (name, seen)
     finally:
         stop.set()
+
+
+def test_a_bitmap_too_large_to_hold_in_memory_three_times_is_not_tried_as_jpeg_xl():
+    """The bitmap method holds the whole image in memory (measured: its peak is 3.2 times the file size)."""
+    def info(kind, size, probe=50.0):
+        return content.ContentInfo(kind=kind, size=size, sha256="0" * 64, probe_saving=probe)
+    limit = router.SIZE_LIMITS.get("bmp_jxl", float("inf"))
+    assert limit * 3.2 <= 1024 * router.MIB  # the peak stays under one gigabyte
+    assert _names(info(K.BMP, limit, probe=40.0)) == ["bmp_jxl", "zstd"]
+    assert _names(info(K.BMP, limit + 1, probe=40.0)) == ["zstd"]
+    assert _names(info(K.BMP, 8 * 1024 * router.MIB, probe=40.0)) == ["zstd"]  # an 8 GB bitmap is still archived

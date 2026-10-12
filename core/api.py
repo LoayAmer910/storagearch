@@ -46,7 +46,8 @@ _catalog_lock = threading.Lock()
 __all__ = [
     "initialize", "create_category", "update_category", "delete_category", "get_category", "list_categories",
     "list_archives", "get_item", "get_archive", "search", "find_duplicate", "dashboard_summary",
-    "archive_file", "archive_file_result", "archive_folder", "archive_folder_result", "checkout", "checkin", "checkin_result",
+    "archive_file", "archive_file_result", "archive_folder", "archive_folder_result", "checkout", "checkout_result",
+    "checkin", "checkin_result",
     "items_pending_return", "handle_pending_checkouts_on_exit", "verify_archive_by_id", "verify_category",
     "verify_all", "is_protected_path", "get_storage_locations", "set_storage_location", "reset_workspace_location",
     "calculate_file_hash", "calculate_folder_hash", "validate_source_path", "data_root", "shutdown_cloud",
@@ -422,6 +423,9 @@ def _check_request(path, category_name, source_action, want_dir):
         return _fail("INVALID_SOURCE_ACTION", "Invalid source action")
     if _is_protected_source(path):
         return _fail("PROTECTED_PATH", "This location is protected and cannot be archived")
+    if not os.path.exists(path) and paths.too_long(os.path.abspath(path), folder=want_dir):
+        return _fail("INVALID_PATH", f"Cannot archive '{path}': {paths.too_long(os.path.abspath(path), folder=want_dir)}. "
+                                     "Move it to a shorter location and try again.")
     if want_dir and not os.path.isdir(path):
         return _fail("SOURCE_MISSING", "Folder does not exist")
     if not want_dir and not os.path.isfile(path):
@@ -459,11 +463,30 @@ def _choose_archive(category, incoming_bytes):
     return cat.add_archive(category_id, zip_path), zip_path
 
 
-def _enough_space(needed):
+def _free_at(path):
+    """Free bytes on the drive that holds `path`; a path that does not exist yet is on the drive of its
+    nearest existing folder."""
+    path = os.path.abspath(path)
+    while not os.path.exists(path) and os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+    return shutil.disk_usage(path).free
+
+
+def _enough_space(needed, where=None, temp=None):
+    """Room for `needed` bytes on the drive of `where` (default: the archives) and for `temp` bytes (default:
+    as many) on the drive of the temporary folder, where compressed and restored files wait. A drive that
+    does not answer has no room."""
     try:
-        return shutil.disk_usage(config.data_root()).free >= needed + _SPACE_MARGIN
+        return (_free_at(where or config.archives_dir()) >= needed + _SPACE_MARGIN
+                and _free_at(config.temp_dir()) >= (needed if temp is None else temp) + _SPACE_MARGIN)
     except OSError:
         return False
+
+
+def _plain_size(scanned):
+    """What the scanned files take as a plain zip - known from the scan, before any compression: the upper
+    limit of what they will take in the archive, since a smarter method is kept only when it is smaller."""
+    return sum(s[2] for s in scanned)
 
 
 def _seal(archive_id, zip_path, category):
@@ -697,6 +720,8 @@ def _archive_file(file_path, category_name, source_action):
         return _duplicate_result(duplicate)
     category = _category_row(category_name)
     name = paths.bare_name(os.path.basename(file_path))
+    if not _enough_space(_plain_size([scanned])):
+        return _fail("INSUFFICIENT_SPACE", "Not enough free space to archive file")
     with OperationScope("archive_file", temp_root=config.temp_dir()) as scope:
         decision = _new_pipeline(scope).decide(file_path, scanned)
         if not _enough_space(decision.stored_size):
@@ -806,6 +831,8 @@ def _archive_folder(folder_path, category_name, source_action):
         return _duplicate_result(duplicate)
     category = _category_row(category_name)
     root_name = paths.bare_name(os.path.basename(os.path.normpath(folder_path)), fallback="folder")
+    if not _enough_space(_plain_size(scanned.values())):
+        return _fail("INSUFFICIENT_SPACE", "Not enough free space to archive folder")
     with OperationScope("archive_folder", temp_root=config.temp_dir()) as scope:
         started = {e: time.perf_counter() for e in scanned}
         decisions = _decide_many(scope, scanned)
@@ -848,12 +875,23 @@ def _archive_folder(folder_path, category_name, source_action):
 # --- checkout / checkin --------------------------------------------------------------------------------
 
 def checkout(item_id, destination=None):
+    return checkout_result(item_id, destination)["path"]
+
+
+def checkout_result(item_id, destination=None):
+    """Like checkout, with the reason: {"success", "path", "reason"}."""
     start = time.perf_counter()
     path, reason = _checkout(item_id, destination)
     events.report_operation({"event_type": "checkout_completed" if path else "checkout_failed", "operation_type": "checkout",
                              "result": "success" if path else "failure", "duration_ms": _ms(start),
                              "error_category": reason, "file_count": 1})
-    return path
+    return {"success": path is not None, "path": path, "reason": reason}
+
+
+def _longest_target(dest, members):
+    """The longest path a checkout of `members` into `dest` creates, and whether it is a folder."""
+    longest = max(members, key=lambda m: len(m["relative_path"]))
+    return os.path.join(os.path.abspath(dest), *longest["relative_path"].split("/")), longest["kind"] == "dir"
 
 
 def _checkout(item_id, destination):
@@ -875,7 +913,8 @@ def _checkout(item_id, destination):
         return None, "SMART_RESTORE_ERROR"
     if os.path.exists(target):
         return None, "TARGET_EXISTS"  # never overwrite what is already there
-    if not _enough_space(sum(m["original_size"] for m in members)):
+    sizes = [m["original_size"] or 0 for m in members]
+    if not _enough_space(sum(sizes), where=dest, temp=max(sizes)):
         return None, "INSUFFICIENT_SPACE"
     try:
         with OperationScope("checkout", temp_root=config.temp_dir()) as scope:
@@ -886,6 +925,8 @@ def _checkout(item_id, destination):
         log.error("checkout of item %s failed: %s", item_id, exc)
         if os.path.isdir(target) and not destination:
             shutil.rmtree(target, ignore_errors=True)
+        if isinstance(exc.__cause__, OSError) and paths.too_long(*_longest_target(dest, members)):
+            return None, "PATH_TOO_LONG"  # Windows refused the path: say so, the archive itself is fine
         return None, "SMART_RESTORE_ERROR"
     cat.set_item_status(item_id, "CHECKED_OUT", workspace_path=target)
     return target, None
@@ -969,9 +1010,14 @@ def _store_new_version(item_id, path, entries, scanned, new_hash):
         if is_folder:
             if cat.archive_state(old_archive_id)["state"] == "open":
                 kept = _unchanged_members(cat.members_of_item(item_id), root_name, entries, scanned)
-            decisions = _decide_many(scope, {e: s for e, s in scanned.items() if e not in kept})
+            changed = {e: s for e, s in scanned.items() if e not in kept}
+            if not _enough_space(_plain_size(changed.values())):
+                return "INSUFFICIENT_SPACE", None
+            decisions = _decide_many(scope, changed)
             stored_total = sum(d.stored_size for d in decisions.values())
         else:
+            if not _enough_space(_plain_size([scanned])):
+                return "INSUFFICIENT_SPACE", None
             decision = _new_pipeline(scope).decide(path, scanned)
             stored_total = decision.stored_size
         if not _enough_space(stored_total):

@@ -17,7 +17,9 @@ HEAVY_LIMIT_BYTES = 256 * MIB   # above this, the slow strategies are left out (
 # for the same bytes. Measured compress+restore on real files, one run at a time: LZMA 0.9-1.0 MB/s and
 # zstd level 19 about 1.1 MB/s on 13 MB CSVs (zstd drops to level 9 from 15 MiB on its own), Brotli at
 # quality 9 about 6.5 MB/s. LZMA above 32 MiB would cost over half a minute per file for a few percent.
-SIZE_LIMITS = {"lzma": 32 * MIB, "lzma_x86": 64 * MIB, "brotli": 128 * MIB}
+# The bitmap method is limited for memory, not for speed: it holds the whole image in memory, and its peak was
+# measured at 3.2 times the file size (34, 46 and 137 MiB bitmaps, 24 and 32 bit). 256 MiB keeps it under 1 GB.
+SIZE_LIMITS = {"lzma": 32 * MIB, "lzma_x86": 64 * MIB, "brotli": 128 * MIB, "bmp_jxl": 256 * MIB}
 
 
 @dataclass(frozen=True)

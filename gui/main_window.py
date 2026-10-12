@@ -1,3 +1,4 @@
+from PySide6.QtCore import QEventLoop
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
 
 from core import api as main
@@ -8,6 +9,7 @@ from gui.dashboard_tab import DashboardTab
 from gui.dialogs import PendingCheckoutsDialog
 from gui.items_tab import ItemsTab
 from gui.settings_tab import SettingsTab
+from gui.workers import run_in_background
 
 
 class MainWindow(QMainWindow):
@@ -20,6 +22,7 @@ class MainWindow(QMainWindow):
         self.settings = settings_module.load_settings()
         self._busy = False
         self._closing_in_progress = False
+        self._returning_items = False
 
         self.dashboard_tab = DashboardTab(self)
         self.categories_tab = CategoriesTab(self)
@@ -61,9 +64,43 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------------------- close
 
+    def _return_items(self, item_ids):
+        """Checks the items in on a background thread while this thread keeps the window alive (a large item
+        takes a while, and a window that stops answering looks crashed). Returns the ids that were not returned."""
+        outcome = {}
+        waiting = QEventLoop(self)
+
+        def work():
+            failures = []
+            for item_id in item_ids:
+                try:
+                    if not main.checkin(item_id):
+                        failures.append(item_id)
+                except Exception:  # noqa: BLE001
+                    failures.append(item_id)
+            return failures
+
+        def done(failures):
+            outcome["failures"] = failures
+            waiting.quit()
+
+        self._returning_items = True
+        self.set_busy(True, f"Returning {len(item_ids)} item(s) before closing...")
+        try:
+            self._return_job = run_in_background(self, work, done, lambda _message: done(list(item_ids)))
+            waiting.exec()
+        finally:
+            self.set_busy(False)
+            self._returning_items = False
+        return outcome.get("failures", list(item_ids))
+
     def closeEvent(self, event):
         if self._closing_in_progress:
             event.accept()
+            return
+
+        if self._returning_items:  # a second click on the X while the items are being returned
+            event.ignore()
             return
 
         if self.is_busy():
@@ -93,13 +130,7 @@ class MainWindow(QMainWindow):
             return
 
         if action == PendingCheckoutsDialog.RETURN_SELECTED:
-            failures = []
-            for item_id in dialog.selected_item_ids():
-                try:
-                    if not main.checkin(item_id):
-                        failures.append(item_id)
-                except Exception:  # noqa: BLE001
-                    failures.append(item_id)
+            failures = self._return_items(dialog.selected_item_ids())
             if failures:
                 QMessageBox.warning(
                     self,

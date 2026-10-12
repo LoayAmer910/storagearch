@@ -272,3 +272,45 @@ def test_items_that_cannot_be_returned_on_close_are_reported(gui_window, monkeyp
     assert event.isAccepted()
     assert message_boxes.calls[-1] == ("warning", "StorageArch", "2 item(s) could not be returned and remain checked out.")
     assert {main.get_item(i)[10] for i in (refused, broken)} == {"CHECKED_OUT"}
+
+
+def test_returning_items_on_close_does_not_freeze_the_window(gui_window, monkeypatch, make_file, message_boxes):
+    """The check-ins run on another thread while the window's own thread keeps handling events."""
+    import threading
+    import time
+
+    from PySide6.QtCore import QTimer
+
+    main.create_category("Docs")
+    main.archive_file(make_file("slow.txt"), "Docs")
+    main.checkout(main.search("slow.txt")[0][0])
+    seen = {"ticks": 0, "closes_refused": 0}
+    real_checkin = main.checkin
+
+    def slow_checkin(item_id):
+        seen["thread"] = threading.current_thread()
+        seen["busy"] = gui_window.is_busy()
+        time.sleep(0.4)
+        return real_checkin(item_id)
+
+    def tick():
+        seen["ticks"] += 1
+        if seen["ticks"] == 2:  # the user clicks the X again while the items are being returned
+            again = _close_event()
+            gui_window.closeEvent(again)
+            seen["closes_refused"] += not again.isAccepted()
+
+    monkeypatch.setattr(main, "checkin", slow_checkin)
+    monkeypatch.setattr("gui.main_window.PendingCheckoutsDialog", FakePendingDialogReturnAll)
+    timer = QTimer(gui_window)
+    timer.timeout.connect(tick)
+    timer.start(20)
+    gui_window._closing_in_progress = False
+    event = _close_event()
+    gui_window.closeEvent(event)
+    timer.stop()
+    assert event.isAccepted() and main.search("slow.txt")[0][7] == "ARCHIVED"
+    assert seen["thread"] is not threading.main_thread(), "the check-in ran on the window's thread"
+    assert seen["ticks"] >= 5, f"the window handled only {seen['ticks']} events while the items were returned"
+    assert seen["busy"] and seen["closes_refused"] == 1 and not gui_window.is_busy()
+    assert message_boxes.calls == []  # a second click on the X is ignored quietly
