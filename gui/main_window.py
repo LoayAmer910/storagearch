@@ -1,5 +1,5 @@
-from PySide6.QtCore import QEventLoop
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QPushButton, QTabWidget
 
 from core import api as main
 from gui import gc_guard
@@ -37,6 +37,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
 
         self.statusBar().showMessage("Ready")
+        # While a long operation runs: how far it is, and a way to stop it.
+        self._busy_message = ""
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self._cancel_operation)
+        self.cancel_button.hide()
+        self.statusBar().addPermanentWidget(self.cancel_button)
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(200)
+        self._progress_timer.timeout.connect(self._show_progress)
 
         self.refresh_all()
 
@@ -57,10 +66,40 @@ class MainWindow(QMainWindow):
     def is_busy(self):
         return self._busy
 
-    def set_busy(self, busy, message=None):
+    def set_busy(self, busy, message=None, cancellable=False):
+        """`cancellable`: the operation is one the core can stop (archive, check out, check in) - the Cancel
+        button and the progress count are shown for it."""
         self._busy = busy
         self.tabs.setEnabled(not busy)
+        self._busy_message = (message or "") if busy else ""
         self.statusBar().showMessage(message if busy else "Ready")
+        self.cancel_button.setVisible(bool(busy and cancellable))
+        self.cancel_button.setEnabled(True)
+        if busy and cancellable:
+            self._progress_timer.start()
+        else:
+            self._progress_timer.stop()
+
+    def _show_progress(self):
+        try:
+            progress = main.operation_progress()
+        except Exception:  # noqa: BLE001 - the count is a nicety; it must never disturb the operation
+            return
+        if not self._busy or not progress or progress["total"] < 2:
+            return
+        self.statusBar().showMessage(
+            f"{self._busy_message}  {progress['phase']} {progress['done']} of {progress['total']}")
+
+    def _cancel_operation(self):
+        try:
+            accepted = main.cancel_current_operation()
+        except Exception:  # noqa: BLE001
+            accepted = False
+        if accepted:
+            self.cancel_button.setEnabled(False)
+            self._busy_message = "Cancelling..."
+            self._progress_timer.stop()
+            self.statusBar().showMessage("Cancelling...")
 
     # --------------------------------------------------------------- close
 

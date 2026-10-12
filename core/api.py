@@ -27,7 +27,7 @@ from core.catalog import EMPTY_DIGEST, Catalog, LegacyDatabaseError
 from core.executor import Executor
 from core.paths import CloudPlaceholderError, ExtractionRefused, InvalidPathError, SourceInUseError
 from core.pipeline import Pipeline, scan as scan_file
-from core.scope import OperationScope, sweep_stale
+from core.scope import OperationCancelled, OperationScope, sweep_stale
 from core.store import PlannedMember
 
 log = logging.getLogger("storagearch")
@@ -47,6 +47,7 @@ __all__ = [
     "initialize", "create_category", "update_category", "delete_category", "get_category", "list_categories",
     "list_archives", "get_item", "get_archive", "search", "find_duplicate", "dashboard_summary",
     "archive_file", "archive_file_result", "archive_folder", "archive_folder_result", "checkout", "checkout_result",
+    "cancel_current_operation", "operation_progress", "OperationCancelled",
     "checkin", "checkin_result",
     "items_pending_return", "handle_pending_checkouts_on_exit", "verify_archive_by_id", "verify_category",
     "verify_all", "is_protected_path", "get_storage_locations", "set_storage_location", "reset_workspace_location",
@@ -332,16 +333,21 @@ def _is_protected_source(path):
 def calculate_file_hash(file_path):
     if not os.path.isfile(file_path):
         return None
-    try:
-        return store.sha256_file(file_path)
-    except OSError as exc:
-        raise _read_error(file_path, exc) from exc
+    with _operation():
+        _raise_if_cancelled()
+        try:
+            digest = store.sha256_file(file_path)
+        except OSError as exc:
+            raise _read_error(file_path, exc) from exc
+        _raise_if_cancelled()  # a cancel that came while the file was read must not be lost with this operation
+        return digest
 
 
 def calculate_folder_hash(folder_path):
     if not os.path.isdir(folder_path):
         return None
-    return folders.folder_hash(folder_path, calculate_file_hash)
+    with _operation():
+        return folders.folder_hash(folder_path, calculate_file_hash)
 
 
 def _read_error(path, exc):
@@ -390,9 +396,103 @@ def _fail(reason, message):
     return {"success": False, "reason": reason, "message": message}
 
 
+# --- cancelling and progress ---------------------------------------------------------------------------
+#
+# An archive, a check-out, a check-in and the hashing before an archive can be cancelled from another thread
+# (the window's Cancel button). The rule: a cancel that arrives before the item is recorded in the catalog
+# leaves nothing behind - no item, no archive entry, no temporary file - and the source is not touched. From
+# the moment the item is recorded the save stands; a cancel then only keeps the source of an archive from
+# being removed, and a check-in is simply finished.
+
+_op_lock = threading.Lock()
+_op_cancel = threading.Event()
+_op = {"running": 0, "final": False, "progress": None, "scopes": set()}
+_CANCELLED_MESSAGE = "The operation was cancelled. Nothing was saved."
+_KEPT_AFTER_CANCEL = "\nThe source was kept because the operation was cancelled."
+
+
+@contextlib.contextmanager
+def _operation():
+    """Marks one public operation as running, for cancel_current_operation() and operation_progress()."""
+    with _op_lock:
+        if _op["running"] == 0:
+            _op_cancel.clear()
+            _op["final"] = False
+        _op["running"] += 1
+    try:
+        yield
+    finally:
+        with _op_lock:
+            _op["running"] -= 1
+            if _op["running"] == 0:
+                _op_cancel.clear()
+                _op.update(final=False, progress=None)
+
+
+@contextlib.contextmanager
+def _scope(kind):
+    """An OperationScope that a cancel reaches: its worker processes are stopped at once."""
+    with OperationScope(kind, temp_root=config.temp_dir()) as scope:
+        with _op_lock:
+            _op["scopes"].add(scope)
+            if _op_cancel.is_set() and not _op["final"]:
+                scope.cancel()
+        try:
+            yield scope
+        finally:
+            with _op_lock:
+                _op["scopes"].discard(scope)
+
+
+def cancel_current_operation():
+    """Asks the running operation to stop. False when nothing is running or it is too late to stop it."""
+    with _op_lock:
+        if _op["running"] == 0 or _op["final"]:
+            return False
+        _op_cancel.set()
+        for scope in _op["scopes"]:
+            scope.cancel()
+    return True
+
+
+def operation_progress():
+    """{"phase", "done", "total"} of the running operation, or None when nothing is running or counted."""
+    with _op_lock:
+        return dict(_op["progress"]) if _op["running"] and _op["progress"] else None
+
+
+def _cancelled():
+    return _op_cancel.is_set() and not _op["final"]
+
+
+def _raise_if_cancelled():
+    if _cancelled():
+        raise OperationCancelled("cancelled")
+
+
+def _too_late_to_cancel():
+    """From here the operation is finished whatever happens: a cancel is refused."""
+    with _op_lock:
+        _op["final"] = True
+
+
+def _phase(name, total):
+    with _op_lock:
+        _op["progress"] = {"phase": name, "done": 0, "total": total}
+
+
+def _step():
+    with _op_lock:
+        if _op["progress"]:
+            _op["progress"]["done"] += 1
+
+
 def _guarded_operation(fn, *args):
     try:
-        return fn(*args)
+        with _operation():
+            return fn(*args)
+    except OperationCancelled:
+        return _fail("CANCELLED", _CANCELLED_MESSAGE)
     except store.SourceChanged as exc:
         return _fail("SOURCE_CHANGED", str(exc))
     except (store.StoreError, ExtractionRefused) as exc:
@@ -672,6 +772,17 @@ def _save_again(item_id, path, strict):
     return None if reason else (state, stats)
 
 
+def _remove_source_unless_cancelled(result, item_id, path, state, action):
+    """The item is saved. A cancel that came after that keeps the source where it is."""
+    if not _cancelled():
+        try:
+            _remove_source(result, item_id, path, state, action)
+            return
+        except OperationCancelled:  # cancelled while a change made during the archive was being saved again
+            pass
+    result["message"] += _KEPT_AFTER_CANCEL
+
+
 def _remove_source(result, item_id, path, state, action):
     """Applies the source action to a source that was archived, and adds to the result what came of it."""
     if _is_protected_source(path):
@@ -723,7 +834,8 @@ def _archive_file(file_path, category_name, source_action):
     name = paths.bare_name(os.path.basename(file_path))
     if not _enough_space(_plain_size([scanned])):
         return _fail("INSUFFICIENT_SPACE", "Not enough free space to archive file")
-    with OperationScope("archive_file", temp_root=config.temp_dir()) as scope:
+    with _scope("archive_file") as scope:
+        _phase("Compressing", 1)
         decision = _new_pipeline(scope).decide(file_path, scanned)
         if not _enough_space(decision.stored_size):
             return _fail("INSUFFICIENT_SPACE", "Not enough free space to archive file")
@@ -731,6 +843,7 @@ def _archive_file(file_path, category_name, source_action):
         with _write_lock:
             archive_id, zip_path = _choose_archive(category, decision.stored_size)
             with _recorded_write(archive_id, zip_path):
+                _raise_if_cancelled()  # the last moment a cancel leaves everything as it was
                 records = store.write_members(zip_path, [_planned_from_decision(decision, file_path, f"{uid}/{name}", name)])
                 item = {"file_type": "file", "file_name": name, "original_path": file_path, "path_in_archive": f"{uid}/{name}",
                         "original_size": info.size, "compressed_size": records[0]["stored_size"],
@@ -743,7 +856,7 @@ def _archive_file(file_path, category_name, source_action):
               "original_size": info.size, "compressed_size": stored, "savings": info.size - stored,
               "smart_compression_used": decision.smart, "strategy": decision.method if decision.smart else BASELINE_NAME}
     if source_action != "keep":
-        _remove_source(result, item_id, file_path, state, source_action)
+        _remove_source_unless_cancelled(result, item_id, file_path, state, source_action)
     return result
 
 
@@ -763,10 +876,14 @@ def _scan_many(entries):
     files = [e for e in entries if e.kind == "file"]
 
     def one(e):
+        _raise_if_cancelled()
         try:
             return e, scan_file(e.full_path)
         except OSError as exc:
             raise _read_error(e.full_path, exc) from exc
+        finally:
+            _step()
+    _phase("Reading", len(files))
     workers = max(1, min(8, len(files)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="scan") as pool:
         return dict(pool.map(one, files))
@@ -776,7 +893,13 @@ def _decide_many(scope, scanned):
     pipeline = _new_pipeline(scope)
     workers = max(1, min(4 * (os.cpu_count() or 2), 32, len(scanned)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="decide") as pool:
-        futures = {e: pool.submit(pipeline.decide, e.full_path, s) for e, s in scanned.items()}
+        def one(e, s):
+            try:
+                return pipeline.decide(e.full_path, s)
+            finally:
+                _step()
+        _phase("Compressing", len(scanned))
+        futures = {e: pool.submit(one, e, s) for e, s in scanned.items()}
         return {e: f.result() for e, f in futures.items()}
 
 
@@ -834,7 +957,7 @@ def _archive_folder(folder_path, category_name, source_action):
     root_name = paths.bare_name(os.path.basename(os.path.normpath(folder_path)), fallback="folder")
     if not _enough_space(_plain_size(scanned.values())):
         return _fail("INSUFFICIENT_SPACE", "Not enough free space to archive folder")
-    with OperationScope("archive_folder", temp_root=config.temp_dir()) as scope:
+    with _scope("archive_folder") as scope:
         started = {e: time.perf_counter() for e in scanned}
         decisions = _decide_many(scope, scanned)
         stored_total = sum(d.stored_size for d in decisions.values())
@@ -844,6 +967,7 @@ def _archive_folder(folder_path, category_name, source_action):
         with _write_lock:
             archive_id, zip_path = _choose_archive(category, stored_total)
             with _recorded_write(archive_id, zip_path):
+                _raise_if_cancelled()  # the last moment a cancel leaves everything as it was
                 records = store.write_members(zip_path, _folder_plan(uid, root_name, entries, decisions))
                 original_size = sum(d.info.size for d in decisions.values())
                 compressed = sum(r["stored_size"] for r in records)
@@ -869,7 +993,7 @@ def _archive_folder(folder_path, category_name, source_action):
         if skipped:
             result["message"] += "\nThe source was kept because not everything in it could be archived."
         else:
-            _remove_source(result, item_id, folder_path, state, source_action)
+            _remove_source_unless_cancelled(result, item_id, folder_path, state, source_action)
     return result
 
 
@@ -882,7 +1006,8 @@ def checkout(item_id, destination=None):
 def checkout_result(item_id, destination=None):
     """Like checkout, with the reason: {"success", "path", "reason"}."""
     start = time.perf_counter()
-    path, reason = _checkout(item_id, destination)
+    with _operation():
+        path, reason = _checkout(item_id, destination)
     events.report_operation({"event_type": "checkout_completed" if path else "checkout_failed", "operation_type": "checkout",
                              "result": "success" if path else "failure", "duration_ms": _ms(start),
                              "error_category": reason, "file_count": 1})
@@ -918,11 +1043,23 @@ def _checkout(item_id, destination):
     if not _enough_space(sum(sizes), where=dest, temp=max(sizes)):
         return None, "INSUFFICIENT_SPACE"
     try:
-        with OperationScope("checkout", temp_root=config.temp_dir()) as scope:
+        with _scope("checkout") as scope:
             executor = Executor(scope)
+            _phase("Restoring", sum(1 for m in members if m["kind"] != "dir"))
             store.extract_members(zip_path, members, dest, work_root=scope.root, restorer=executor.restore,
-                                  streams=executor.runs_in_process)
+                                  streams=executor.runs_in_process, stop=_cancelled, on_file=_step)
     except (store.RestoreError, ExtractionRefused) as exc:
+        if _cancelled():
+            # the target did not exist before this checkout (checked above): what is there is this checkout's
+            for leftover in (target, target + ".restoring"):
+                if os.path.isdir(leftover):
+                    shutil.rmtree(leftover, ignore_errors=True)
+                elif os.path.exists(leftover):
+                    with contextlib.suppress(OSError):
+                        os.remove(leftover)
+            if not destination:
+                _remove_empty_parent(target)
+            return None, "CANCELLED"
         log.error("checkout of item %s failed: %s", item_id, exc)
         if os.path.isdir(target) and not destination:
             shutil.rmtree(target, ignore_errors=True)
@@ -942,7 +1079,10 @@ def checkin_result(item_id, remove_workspace_copy=True):
     WORKSPACE_COPY_MISSING means the checked-out copy was gone and the item went back to its archived version."""
     start = time.perf_counter()
     try:
-        ok, reason, stats = _checkin(item_id, remove_workspace_copy)
+        with _operation():
+            ok, reason, stats = _checkin(item_id, remove_workspace_copy)
+    except OperationCancelled:  # before the new version was recorded: the item and its copy are as they were
+        ok, reason, stats = False, "CANCELLED", None
     except Exception as exc:  # noqa: BLE001 - a failed checkin keeps the workspace copy and reports failure
         log.exception("checkin of item %s failed", item_id)
         ok, reason, stats = False, type(exc).__name__, None
@@ -982,6 +1122,7 @@ def _checkin(item_id, remove_workspace_copy):
         reason, stats = _store_new_version(item_id, workspace, entries, scanned, new_hash)
         if reason:
             return False, reason, None
+    _too_late_to_cancel()  # the content is saved: what is left is finished, never left half done
     if removable:
         outcome, later = _remove_once_saved(item_id, workspace, state)
         stats = later or stats
@@ -1007,7 +1148,7 @@ def _store_new_version(item_id, path, entries, scanned, new_hash):
     uid = f"{cat.item_uid(item_id)}.{Catalog.new_uid()[:6]}"
     root_name = paths.bare_name(os.path.basename(os.path.normpath(path)), fallback="folder" if is_folder else "item")
     kept = {}
-    with OperationScope("checkin", temp_root=config.temp_dir()) as scope:
+    with _scope("checkin") as scope:
         if is_folder:
             if cat.archive_state(old_archive_id)["state"] == "open":
                 kept = _unchanged_members(cat.members_of_item(item_id), root_name, entries, scanned)
@@ -1040,6 +1181,7 @@ def _store_new_version(item_id, path, entries, scanned, new_hash):
                 planned = [_planned_from_decision(decision, path, f"{uid}/{root_name}", root_name)]
                 original = decision.info.size
             with _recorded_write(archive_id, zip_path):
+                _raise_if_cancelled()  # the last moment a cancel leaves everything as it was
                 records = store.write_members(zip_path, planned)
                 content = [*kept.values(), *records]
                 stored = sum(r["stored_size"] for r in content)

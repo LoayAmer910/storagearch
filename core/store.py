@@ -372,13 +372,15 @@ def _streams_in_process(strategy, size):
 
 
 def extract_members(zip_path, members, destination, work_root=None, restorer=None, streams=None,
-                    workers=EXTRACT_WORKERS):
+                    workers=EXTRACT_WORKERS, stop=None, on_file=None):
     """Restores catalog member rows under `destination` (each at its relative_path). Every file is verified
     against its original SHA-256 before it appears under its name. `restorer(strategy, stored, out_dir, size)`
     runs a smart member's restore (the API passes Executor.restore, so it is killable); by default it runs
     in-process. A smart member whose codec may run here (`streams(strategy, size)`) is decoded straight from
     the archive into its file instead - no temporary files. Files are restored by `workers` threads: the
-    time per small file is mostly the system opening the new file, which overlaps well. Returns the
+    time per small file is mostly the system opening the new file, which overlaps well. `stop()` is asked
+    before each file: once it says yes no further file is started and RestoreError is raised (what was
+    restored so far is the caller's to remove). `on_file()` is called after each restored file. Returns the
     restored paths."""
     restorer = restorer or _restore_in_process
     streams = streams or _streams_in_process
@@ -394,7 +396,7 @@ def extract_members(zip_path, members, destination, work_root=None, restorer=Non
 
     def one(job):
         member, target = job
-        if failed.is_set():
+        if failed.is_set() or (stop is not None and stop()):
             return None
         try:
             z = getattr(local, "zip", None)
@@ -403,6 +405,8 @@ def extract_members(zip_path, members, destination, work_root=None, restorer=Non
                 with opened_lock:
                     opened.append(z)
             _extract_file(z, member, target, work_root, restorer, streams)
+            if on_file is not None:
+                on_file()
             return target
         except (zipfile.BadZipFile, KeyError, OSError, EOFError) as exc:
             failed.set()
@@ -419,6 +423,8 @@ def extract_members(zip_path, members, destination, work_root=None, restorer=Non
         errors = [e for e in done if e is not None]
         if errors:
             raise errors[0]
+        if stop is not None and stop():
+            raise RestoreError(f"restoring from {zip_path} was stopped")
         return [f.result() for f in futures]
     finally:
         for z in opened:

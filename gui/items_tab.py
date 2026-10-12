@@ -32,6 +32,7 @@ def _in_use_message(path):
             f"Close it and try again.\n\n{path}")
 
 
+_CANCELLED = "Cancelled. Nothing was saved, and the source was not touched."
 _CHECKOUT_FAILURES = {
     "INSUFFICIENT_SPACE": "Checkout failed: there is not enough free space for this item.",
     "PATH_TOO_LONG": "Checkout failed: the item's names are too long for the workspace folder (Windows allows 260 "
@@ -226,7 +227,7 @@ class ItemsTab(QWidget):
             QMessageBox.warning(self, "Add item", "The name is not valid, or the path does not exist.")
             return
 
-        self.main_window.set_busy(True, "Checking for duplicate content...")
+        self.main_window.set_busy(True, "Checking for duplicate content...", cancellable=True)
         self._pending_archive = (path, category, is_folder)
 
         def compute_and_check():
@@ -246,6 +247,8 @@ class ItemsTab(QWidget):
                 return {"error": f"Cannot read the source:\n{exc}"}
             except OSError as exc:
                 return {"error": f"Unable to read source content: {exc}"}
+            except archive_manager.OperationCancelled:
+                return {"cancelled": True}
             if content_hash is None:
                 return {"error": "Unable to read source content."}
             return {"hash": content_hash, "duplicate": main.find_duplicate(content_hash)}
@@ -262,6 +265,11 @@ class ItemsTab(QWidget):
         if result.get("error"):
             self.main_window.set_busy(False)
             QMessageBox.warning(self, "Add item", result["error"])
+            self._pending_archive = None
+            return
+        if result.get("cancelled"):
+            self.main_window.set_busy(False)
+            QMessageBox.information(self, "Add item", _CANCELLED)
             self._pending_archive = None
             return
 
@@ -287,7 +295,8 @@ class ItemsTab(QWidget):
 
     def _run_archive(self, source_action):
         path, category, is_folder = self._pending_archive
-        self.main_window.set_busy(True, "Archiving...")  # still busy from the duplicate-check phase; message update only
+        # still busy from the duplicate-check phase; message update only
+        self.main_window.set_busy(True, "Archiving...", cancellable=True)
         # *_result gives a structured {"success", "reason", "message"} so the user sees a
         # specific reason (space/permission/protected path/...) instead of a generic failure.
         func = main.archive_folder_result if is_folder else main.archive_file_result
@@ -301,6 +310,9 @@ class ItemsTab(QWidget):
         self._pending_archive = None
 
         if not result["success"]:
+            if result["reason"] == "CANCELLED":
+                QMessageBox.information(self, "Add item", _CANCELLED)
+                return
             message = _in_use_message(result["path"]) if result["reason"] == "SOURCE_IN_USE" else result["message"]
             QMessageBox.warning(self, "Add item", message)
             return
@@ -357,13 +369,16 @@ class ItemsTab(QWidget):
             QMessageBox.information(self, "Checkout", "Only archived items can be checked out.")
             return
 
-        self.main_window.set_busy(True, "Checking out...")
+        self.main_window.set_busy(True, "Checking out...", cancellable=True)
         self._thread, self._worker = run_in_background(
             self, main.checkout_result, self._on_checkout_done, self._on_action_failed, args=(item_id,)
         )
 
     def _on_checkout_done(self, result):
         self.main_window.set_busy(False)
+        if not result["success"] and result["reason"] == "CANCELLED":
+            QMessageBox.information(self, "Checkout", "Cancelled. The item is still in its archive.")
+            return
         if not result["success"]:
             QMessageBox.warning(self, "Checkout", _CHECKOUT_FAILURES.get(
                 result["reason"], "Checkout failed. Check available disk space and try again."))
@@ -382,13 +397,17 @@ class ItemsTab(QWidget):
             QMessageBox.information(self, "Checkin", "Only checked-out items can be checked in.")
             return
 
-        self.main_window.set_busy(True, "Checking in...")
+        self.main_window.set_busy(True, "Checking in...", cancellable=True)
         self._thread, self._worker = run_in_background(
             self, main.checkin_result, self._on_checkin_done, self._on_action_failed, args=(item_id,)
         )
 
     def _on_checkin_done(self, result):
         self.main_window.set_busy(False)
+        if not result["success"] and result["reason"] == "CANCELLED":
+            QMessageBox.information(self, "Checkin", "Cancelled. The checked-out copy and the archived version "
+                                                     "are exactly as they were.")
+            return
         if not result["success"]:
             QMessageBox.warning(
                 self,
