@@ -57,7 +57,8 @@ def main():
     multiprocessing.freeze_support()
     work = os.path.abspath(sys.argv[1])
     os.makedirs(work, exist_ok=True)
-    os.chdir(work)  # the app keeps its data in the folder it is started in
+    os.chdir(work)
+    os.environ["STORAGEARCH_HOME"] = work  # a packaged build keeps its data next to its exe file; not this test
     from core import api, tools
 
     print("frozen:", getattr(sys, "frozen", False), "| JPEG XL tools:", tools.available("cjxl", "djxl")[0])

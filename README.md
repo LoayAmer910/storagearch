@@ -48,8 +48,8 @@ paths and file contents are never sent.
 
 The ready-to-run Windows app, `StorageArch.exe`, is on the [Releases](https://github.com/LoayAmer910/storagearch/releases/latest)
 page - no Python needed. The file is not code-signed, so Windows SmartScreen may warn on first run: choose
-**More info**, then **Run anyway**. The app keeps its data in a `SmartArchiveData` folder next to where it is
-started, so put the EXE in a folder of its own.
+**More info**, then **Run anyway**. The app keeps its data in a `SmartArchiveData` folder next to the EXE
+file, so put the EXE in a folder of its own.
 
 ## Requirements
 

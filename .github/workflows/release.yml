@@ -81,16 +81,20 @@ jobs:
       - name: Start the app itself
         shell: pwsh
         run: |
+          # started from another folder, the way a shortcut does: the data must appear next to the exe file
           $home_dir = Join-Path $env:RUNNER_TEMP "first_run"
-          New-Item -ItemType Directory $home_dir | Out-Null
-          $app = Start-Process (Resolve-Path dist\StorageArch.exe) -WorkingDirectory $home_dir -PassThru
+          $elsewhere = Join-Path $env:RUNNER_TEMP "started_from_here"
+          New-Item -ItemType Directory $home_dir, $elsewhere | Out-Null
+          Copy-Item dist\StorageArch.exe $home_dir
+          $app = Start-Process (Join-Path $home_dir "StorageArch.exe") -WorkingDirectory $elsewhere -PassThru
           Start-Sleep -Seconds 25
           $app.Refresh()
           $alive = -not $app.HasExited
           $created = Test-Path (Join-Path $home_dir "SmartArchiveData\smartarchive.db")
+          $stray = Test-Path (Join-Path $elsewhere "SmartArchiveData")
           taskkill /PID $app.Id /T /F | Out-Null
-          "still running: $alive, data folder created: $created"
-          if (-not ($alive -and $created)) { throw "the packaged app did not start correctly" }
+          "still running: $alive, data next to the exe: $created, data in the folder it was started from: $stray"
+          if (-not ($alive -and $created) -or $stray) { throw "the packaged app did not start correctly" }
           exit 0
 
       - name: Checksum

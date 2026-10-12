@@ -69,6 +69,18 @@ cloud_report_crash = events.cloud_report_crash
 
 # --- setup ---------------------------------------------------------------------------------------------
 
+def _follow_data_folder():
+    """Before anything reads a path from the catalog: the data folder may have been moved since it was written."""
+    default_workspace = config.workspace_dir() if config.current()["workspace_root"] is None else None
+    try:
+        moved = _catalog.follow_data_folder(config.archives_dir(), default_workspace)
+    except sqlite3.Error as exc:
+        log.error("the paths in the catalog could not be brought up to date: %s", exc)
+        return
+    if moved:
+        log.warning("the data folder was moved or copied; %d path(s) in the catalog now point to %s", moved, config.data_root())
+
+
 class AlreadyRunningError(OSError):
     """Another StorageArch is working on this data folder."""
 
@@ -107,6 +119,7 @@ def initialize():
     _lock_data_folder(config.data_root())
     with _catalog_lock:
         _catalog = Catalog(config.db_path())
+    _follow_data_folder()
     repaired = store.recover(config.archives_dir(), recorded=_catalog.holds_members)
     if repaired:
         log.warning("repaired interrupted writes: %s", repaired)

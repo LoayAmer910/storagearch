@@ -347,6 +347,36 @@ class Catalog:
             self._refresh_archive(db, archive_id)
             self._set_size(db, archive_id, archive_size)
 
+    def follow_data_folder(self, archives_dir, default_workspace_dir=None):
+        """The catalog stores full paths. After the data folder was moved, renamed or copied they point to
+        where it used to be - the archives would look missing, or a copy would write into the original. This
+        brings the paths of the archives and their listings back under `archives_dir` (an archive always
+        lies in <data folder>/archives/<category folder>/), and - when the workspace is the default one inside
+        the data folder - the paths of the checked-out copies under `default_workspace_dir`. A catalog whose
+        paths are right is not written to. Returns how many rows changed."""
+        archives_dir = _norm(archives_dir)
+        changed = 0
+        with self.transaction() as db:
+            old_root = None
+            for archive_id, file_path, manifest in db.execute("SELECT id, file_path, manifest_path FROM archives").fetchall():
+                parts = file_path.split("/")
+                if len(parts) < 4:
+                    continue
+                here = f"{archives_dir}/{parts[-2]}/{parts[-1]}"
+                if os.path.normcase(here) == os.path.normcase(file_path):
+                    continue
+                old_root = old_root or "/".join(parts[:-3])
+                listing = None if manifest is None else f"{archives_dir}/{parts[-2]}/{manifest.split('/')[-1]}"
+                db.execute("UPDATE archives SET file_path = ?, manifest_path = ? WHERE id = ?", (here, listing, archive_id))
+                changed += 1
+            if old_root and default_workspace_dir:
+                was, now = f"{old_root}/workspace/", _norm(default_workspace_dir) + "/"
+                for item_id, workspace in db.execute("SELECT id, workspace_path FROM items WHERE workspace_path IS NOT NULL").fetchall():
+                    if os.path.normcase(workspace).startswith(os.path.normcase(was)):
+                        db.execute("UPDATE items SET workspace_path = ? WHERE id = ?", (now + workspace[len(was):], item_id))
+                        changed += 1
+        return changed
+
     def holds_members(self, zip_path, names):
         """Whether every named ZIP entry is a recorded member (live or not) of the archive at zip_path."""
         row = self._one("SELECT id FROM archives WHERE file_path = ?", (_norm(zip_path),))
