@@ -17,9 +17,10 @@ contains, and stores nothing it has not restored and verified byte for byte.
 3. **Keep it only if it pays.** A verified candidate wins only if it beats the ZIP baseline by at least
    3 % or 1 MiB; otherwise the file is stored as a normal ZIP member.
 
-Archives are standard ZIP files with a manifest next to them. Items can be checked out to a workspace,
-edited and checked in (a folder writes only the files that changed), and every archive can be verified
-at any time.
+Archives are standard ZIP files with a manifest next to them ([the format](docs/ARCHIVE_FORMAT.md)). Items can
+be checked out to a workspace, edited and checked in (a folder writes only the files that changed), and every
+archive can be verified at any time. A long operation shows how far it is and can be cancelled; a cancelled
+operation leaves nothing half done.
 
 ## Results
 
@@ -54,7 +55,8 @@ file, so put the EXE in a folder of its own.
 ## Requirements
 
 - Windows, Python 3.14+
-- `pip install -r requirements.txt` (development and tests: `requirements-dev.txt`)
+- `pip install -r requirements.txt` (development and tests: `requirements-dev.txt`). The exact versions the
+  tests and the release are built with are pinned, with hashes, in `requirements-lock.txt`.
 - Optional: the JPEG XL tools `cjxl.exe` / `djxl.exe` (from [libjxl](https://github.com/libjxl/libjxl/releases))
   in a `tools` folder next to the code, or in the folder named by `STORAGEARCH_JXL_TOOLS_DIR`. Without
   them, JPEG and BMP files use the general compressors.
@@ -108,7 +110,7 @@ and needs `STORAGEARCH_OLD_ENGINE_DIR` to point at a checkout of it.
 
 Two GitHub Actions workflows, both on a clean Windows machine:
 
-- **Tests** (`.github/workflows/tests.yml`) - on every push: the smoke tests, then the full suite.
+- **Tests** (`.github/workflows/tests.yml`) - on every push: the linter, the smoke tests, then the full suite.
 - **Release** (`.github/workflows/release.yml`) - when a version tag is pushed: the full suite, then the EXE is
   built, and the packaged build itself is tested (`tests/packaging/selftest.py` archives sample files, restores
   them, compares them byte for byte and verifies the archives; then the app is started). Only then is the EXE
@@ -119,6 +121,18 @@ Two GitHub Actions workflows, both on a clean Windows machine:
     python scripts/import_old_data.py OLD_DATA_ROOT [TARGET_DIR]
 
 The old data is only read, never modified.
+
+## Known limits
+
+- Windows only, and Python 3.14 or newer when run from source.
+- Archives are not encrypted, and there is no command-line tool: the app is used through its window.
+- A file or folder whose full path is longer than 260 characters is refused with a message, unless Windows'
+  long-path support is turned on. Nothing is ever archived in part.
+- Files stored with a method stronger than ZIP's need StorageArch, or the matching standard decoder, to be
+  restored - [the format](docs/ARCHIVE_FORMAT.md) says which one.
+- The EXE is not code-signed.
+
+Security: see [SECURITY.md](SECURITY.md).
 
 ## License
 
