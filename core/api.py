@@ -7,6 +7,7 @@ and records the result in the catalog only after the archive was read back. Clou
 core.events after the local result is final and can never change it.
 """
 import concurrent.futures
+import contextlib
 import logging
 import os
 import re
@@ -14,6 +15,11 @@ import shutil
 import sqlite3
 import threading
 import time
+
+try:
+    import msvcrt
+except ImportError:  # not Windows: no lock between instances
+    msvcrt = None
 
 from core import catalog as catalog_module
 from core import config, events, folders, paths, router, store
@@ -44,7 +50,7 @@ __all__ = [
     "items_pending_return", "handle_pending_checkouts_on_exit", "verify_archive_by_id", "verify_category",
     "verify_all", "is_protected_path", "get_storage_locations", "set_storage_location", "reset_workspace_location",
     "calculate_file_hash", "calculate_folder_hash", "validate_source_path", "data_root", "shutdown_cloud",
-    "CloudPlaceholderError", "InvalidPathError", "SourceInUseError", "LegacyDatabaseError",
+    "CloudPlaceholderError", "InvalidPathError", "SourceInUseError", "LegacyDatabaseError", "AlreadyRunningError",
     "cloud_available", "cloud_is_registered", "cloud_register", "cloud_disconnect", "cloud_telemetry_enabled",
     "cloud_set_telemetry_enabled", "cloud_submit_feedback", "cloud_check_for_updates", "cloud_report_crash",
 ]
@@ -63,18 +69,50 @@ cloud_report_crash = events.cloud_report_crash
 
 # --- setup ---------------------------------------------------------------------------------------------
 
+class AlreadyRunningError(OSError):
+    """Another StorageArch is working on this data folder."""
+
+
+_instance_lock = None               # (lock file path, open file): held for as long as this process uses the folder
+
+
+def _lock_data_folder(root):
+    """One StorageArch per data folder. The write lock and the repair of interrupted writes at startup only
+    know this process: a second one would take a write that is still running for one that was interrupted
+    and undo it. The lock is a locked byte of a file, so Windows frees it by itself when the process ends,
+    however it ends. Raises AlreadyRunningError when another process holds it."""
+    global _instance_lock
+    path = os.path.join(root, "storagearch.lock")
+    if msvcrt is None or (_instance_lock is not None and os.path.normcase(_instance_lock[0]) == os.path.normcase(path)):
+        return
+    handle = open(path, "a+b")
+    try:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        raise AlreadyRunningError(f"StorageArch is already running on the data folder {root}") from None
+    previous, _instance_lock = _instance_lock, (path, handle)
+    if previous is not None:
+        previous[1].close()
+
+
 def initialize():
-    """Loads the config, creates the data folders, opens the catalog, repairs interrupted writes and
-    removes temporary folders of processes that died. Returns the database path."""
+    """Loads the config, creates the data folders, takes the data folder for this process, opens the catalog,
+    repairs interrupted writes and removes temporary folders of processes that died. Returns the database path."""
     global _catalog
     config.load()
     for folder in (config.archives_dir(), config.workspace_dir(), config.temp_dir(), config.log_dir()):
         os.makedirs(folder, exist_ok=True)
+    _lock_data_folder(config.data_root())
     with _catalog_lock:
         _catalog = Catalog(config.db_path())
-    repaired = store.recover(config.archives_dir())
+    repaired = store.recover(config.archives_dir(), recorded=_catalog.holds_members)
     if repaired:
         log.warning("repaired interrupted writes: %s", repaired)
+    for archive_id, zip_path in _catalog.archives_without_content():
+        if not os.path.exists(zip_path):  # what a first write that never completed left behind
+            _catalog.delete_archive_without_content(archive_id)
     sweep_stale(config.temp_dir())
     _log_to(config.log_dir())
     events.start()
@@ -223,8 +261,43 @@ def _verify_archive_row(archive_id, row, members=None):
     state = cat.archive_state(archive_id)
     sealed = state["zip_hash"] if state["state"] == "sealed" else None
     known = [m["path_in_archive"] for m in cat.members_of_archive(archive_id, live_only=False)]
-    return store.verify_archive(row[3], cat.members_of_archive(archive_id) if members is None else members,
-                                sealed, expected_size=row[4], known_names=known)
+    status = store.verify_archive(row[3], cat.members_of_archive(archive_id) if members is None else members,
+                                  sealed, expected_size=row[4], known_names=known)
+    if status == "CHANGED" and _repair_open_archive(archive_id):
+        return _verify_archive_row(archive_id, cat.archive_by_id(archive_id), members)
+    return status
+
+
+def _repair_open_archive(archive_id):
+    """Makes good what an interrupted write or compaction left in an open archive: entries the catalog never
+    recorded, or a recorded size that fell behind. Only when the file is a whole ZIP with nothing after it
+    and every recorded member in it is intact - anything else stays reported as it is. A sealed archive is
+    never touched. Returns whether something was repaired."""
+    cat = _cat()
+    with _write_lock:
+        row, state = cat.archive_by_id(archive_id), cat.archive_state(archive_id)
+        if row is None or state["state"] != "open" or not os.path.exists(row[3]):
+            return False
+        live = cat.members_of_archive(archive_id)
+        if not store.ends_cleanly(row[3]) or store.verify_archive(row[3], live) != "VERIFIED":
+            return False
+        known = {m["path_in_archive"] for m in cat.members_of_archive(archive_id, live_only=False)}
+        unknown = sorted(store.entry_names(row[3]) - known)
+        if not unknown and os.path.getsize(row[3]) == row[4]:
+            return False
+        category = cat.category_by_id(row[1])
+        try:
+            if unknown:
+                log.warning("%s held %d entries the catalog never recorded (an interrupted write); removed: %s",
+                            row[3], len(unknown), unknown[:5])
+                _compact(archive_id, category)
+            else:
+                log.warning("the recorded size of %s had fallen behind the file; corrected", row[3])
+                _refresh_old_archive(archive_id, category)
+        except (store.StoreError, OSError, sqlite3.Error) as exc:
+            log.error("%s could not be repaired: %s", row[3], exc)
+            return False
+        return True
 
 
 # --- paths and hashes the GUI checks before archiving -------------------------------------------------
@@ -388,6 +461,38 @@ def _seal(archive_id, zip_path, category):
     manifest = store.write_manifest(zip_path, category[1], cat.members_of_archive(archive_id), state["members_digest"],
                                     "sealed", file_sha)
     cat.set_archive_file_facts(archive_id, os.path.getsize(zip_path), manifest)
+
+
+@contextlib.contextmanager
+def _recorded_write(archive_id, zip_path):
+    """The members written inside the block and their catalog rows count together or not at all: on any
+    error the archive file is put back as it was (and after a crash, at the next start). A first write that
+    fails leaves no archive row behind."""
+    try:
+        with store.deferred(zip_path):
+            yield
+    except BaseException:
+        if not os.path.exists(zip_path):
+            try:
+                _cat().delete_archive_without_content(archive_id)
+            except sqlite3.Error as exc:
+                log.warning("the empty archive row %s could not be removed: %s", archive_id, exc)
+        raise
+
+
+def _after_recorded(archive_id, zip_path, category, old_archive_id=None):
+    """What follows a recorded write: the listing and status of the archive, sealing a full archive, and - for
+    a new version of an item - the listing and compaction of the old archive. The item is saved by now, so a
+    failure here is logged and made good at the next write, verification or start; it never reports a saved
+    item as failed."""
+    try:
+        _after_write(archive_id, zip_path, category)
+        if old_archive_id is not None:
+            if archive_id != old_archive_id:
+                _refresh_old_archive(old_archive_id, category)
+            _compact_if_worth_it(old_archive_id, category)
+    except Exception:  # noqa: BLE001
+        log.exception("a step after saving to %s failed; the item itself is saved", zip_path)
 
 
 def _after_write(archive_id, zip_path, category):
@@ -586,13 +691,14 @@ def _archive_file(file_path, category_name, source_action):
         uid = Catalog.new_uid()
         with _write_lock:
             archive_id, zip_path = _choose_archive(category, decision.stored_size)
-            records = store.write_members(zip_path, [_planned_from_decision(decision, file_path, f"{uid}/{name}", name)])
-            item = {"file_type": "file", "file_name": name, "original_path": file_path, "path_in_archive": f"{uid}/{name}",
-                    "original_size": info.size, "compressed_size": records[0]["stored_size"],
-                    "original_hash": info.sha256, "archive_hash": records[0]["stored_sha256"],
-                    "strategy": decision.method if decision.smart else None, "uid": uid}
-            item_id = _cat().add_item(archive_id, item, records)
-            _after_write(archive_id, zip_path, category)
+            with _recorded_write(archive_id, zip_path):
+                records = store.write_members(zip_path, [_planned_from_decision(decision, file_path, f"{uid}/{name}", name)])
+                item = {"file_type": "file", "file_name": name, "original_path": file_path, "path_in_archive": f"{uid}/{name}",
+                        "original_size": info.size, "compressed_size": records[0]["stored_size"],
+                        "original_hash": info.sha256, "archive_hash": records[0]["stored_sha256"],
+                        "strategy": decision.method if decision.smart else None, "uid": uid}
+                item_id = _cat().add_item(archive_id, item, records, archive_size=os.path.getsize(zip_path))
+            _after_recorded(archive_id, zip_path, category)
     stored = records[0]["stored_size"]
     result = {"success": True, "reason": "OK", "message": "Archived and verified successfully",
               "original_size": info.size, "compressed_size": stored, "savings": info.size - stored,
@@ -696,14 +802,15 @@ def _archive_folder(folder_path, category_name, source_action):
         uid = Catalog.new_uid()
         with _write_lock:
             archive_id, zip_path = _choose_archive(category, stored_total)
-            records = store.write_members(zip_path, _folder_plan(uid, root_name, entries, decisions))
-            original_size = sum(d.info.size for d in decisions.values())
-            compressed = sum(r["stored_size"] for r in records)
-            item = {"file_type": "folder", "file_name": root_name, "original_path": folder_path,
-                    "path_in_archive": f"{uid}/{root_name}/", "original_size": original_size, "compressed_size": compressed,
-                    "original_hash": folder_hash, "archive_hash": _records_digest(records), "strategy": None, "uid": uid}
-            item_id = _cat().add_item(archive_id, item, records)
-            _after_write(archive_id, zip_path, category)
+            with _recorded_write(archive_id, zip_path):
+                records = store.write_members(zip_path, _folder_plan(uid, root_name, entries, decisions))
+                original_size = sum(d.info.size for d in decisions.values())
+                compressed = sum(r["stored_size"] for r in records)
+                item = {"file_type": "folder", "file_name": root_name, "original_path": folder_path,
+                        "path_in_archive": f"{uid}/{root_name}/", "original_size": original_size, "compressed_size": compressed,
+                        "original_hash": folder_hash, "archive_hash": _records_digest(records), "strategy": None, "uid": uid}
+                item_id = _cat().add_item(archive_id, item, records, archive_size=os.path.getsize(zip_path))
+            _after_recorded(archive_id, zip_path, category)
     by_path = {r["relative_path"]: r for r in records}
     file_results = [{
         "path_in_archive": by_path[f"{root_name}/{e.rel_path}"]["path_in_archive"],
@@ -872,19 +979,18 @@ def _store_new_version(item_id, path, entries, scanned, new_hash):
             else:
                 planned = [_planned_from_decision(decision, path, f"{uid}/{root_name}", root_name)]
                 original = decision.info.size
-            records = store.write_members(zip_path, planned)
-            content = [*kept.values(), *records]
-            stored = sum(r["stored_size"] for r in content)
-            new_item = {"path_in_archive": f"{uid}/{root_name}" + ("/" if is_folder else ""), "original_size": original,
-                        "compressed_size": stored, "original_hash": new_hash,
-                        "archive_hash": _records_digest(content) if is_folder else records[0]["stored_sha256"],
-                        "strategy": None if is_folder or not decision.smart else decision.method}
-            cat.replace_item_content(item_id, new_item, records, new_archive_id=archive_id,
-                                     kept=[m["path_in_archive"] for m in kept.values()])
-            _after_write(archive_id, zip_path, category)
-            if archive_id != old_archive_id:
-                _refresh_old_archive(old_archive_id, category)
-            _compact_if_worth_it(old_archive_id, category)
+            with _recorded_write(archive_id, zip_path):
+                records = store.write_members(zip_path, planned)
+                content = [*kept.values(), *records]
+                stored = sum(r["stored_size"] for r in content)
+                new_item = {"path_in_archive": f"{uid}/{root_name}" + ("/" if is_folder else ""), "original_size": original,
+                            "compressed_size": stored, "original_hash": new_hash,
+                            "archive_hash": _records_digest(content) if is_folder else records[0]["stored_sha256"],
+                            "strategy": None if is_folder or not decision.smart else decision.method}
+                cat.replace_item_content(item_id, new_item, records, new_archive_id=archive_id,
+                                         kept=[m["path_in_archive"] for m in kept.values()],
+                                         archive_size=os.path.getsize(zip_path) if os.path.exists(zip_path) else None)
+            _after_recorded(archive_id, zip_path, category, old_archive_id)
     return None, {"original": original, "stored": stored}
 
 
@@ -916,10 +1022,14 @@ def _compact_if_worth_it(archive_id, category):
         return
     if state["dead_bytes"] < COMPACT_DEAD_RATIO * max(os.path.getsize(row[3]), 1):
         return
-    live = cat.members_of_archive(archive_id)
-    facts = store.compact(row[3], live)
-    cat.update_member_facts(archive_id, facts)
-    cat.forget_dead_members(archive_id)
+    _compact(archive_id, category)
+
+
+def _compact(archive_id, category):
+    cat = _cat()
+    row = cat.archive_by_id(archive_id)
+    facts = store.compact(row[3], cat.members_of_archive(archive_id))
+    cat.record_compaction(archive_id, facts, os.path.getsize(row[3]))
     _refresh_old_archive(archive_id, category)
 
 

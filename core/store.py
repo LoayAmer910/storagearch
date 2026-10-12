@@ -18,6 +18,7 @@ Extracting (I1, I7)
     target, compared with its original SHA-256, and only then renamed into place.
 """
 import concurrent.futures
+import contextlib
 import hashlib
 import io
 import json
@@ -108,6 +109,9 @@ def write_members(zip_path, planned):
             records = [_write_one(z, m) for m in planned]
         _read_back(partial, records)
         _sync(partial)
+        if _is_deferred(zip_path):  # the new archive counts only once the caller's catalog update is done
+            _write_durably(zip_path + ".guard", json.dumps({"new": True, "names": [zip_name(m) for m in planned]}).encode())
+            _deferred[_key(zip_path)] = True
         os.replace(partial, zip_path)
         return records
     except BaseException:
@@ -126,7 +130,8 @@ def _append(zip_path, planned):
         f.seek(start_dir)
         saved_tail = f.read()
     _write_durably(tail, saved_tail)
-    _write_durably(guard, json.dumps({"start_dir": start_dir, "tail_size": len(saved_tail)}).encode())
+    _write_durably(guard, json.dumps({"start_dir": start_dir, "tail_size": len(saved_tail),
+                                      "names": [zip_name(m) for m in planned]}).encode())
     try:
         existing = _names(zip_path)
         clash = [zip_name(m) for m in planned if zip_name(m) in existing]
@@ -139,9 +144,55 @@ def _append(zip_path, planned):
     except BaseException:
         rollback(zip_path)
         raise
-    _silent_remove(guard)
-    _silent_remove(tail)
+    if _is_deferred(zip_path):  # the guard stays until the caller's catalog update is done
+        _deferred[_key(zip_path)] = True
+        return records
+    commit(zip_path)
     return records
+
+
+# A write that must count together with a catalog update: inside `deferred(zip_path)` the archive keeps its
+# guard after write_members, so that until the block ends the archive can still be put back as it was.
+_deferred = {}                      # normalized zip path -> whether a write inside the block left a guard
+_deferred_lock = threading.Lock()
+
+
+def _key(zip_path):
+    return os.path.normcase(os.path.abspath(zip_path))
+
+
+def _is_deferred(zip_path):
+    return _key(zip_path) in _deferred
+
+
+@contextlib.contextmanager
+def deferred(zip_path):
+    """Makes the writes to zip_path inside the block count only when the block ends without an error: then
+    the guard is removed (commit); on any error - or a crash, via recover() at startup - the archive is put
+    back exactly as it was before the block. Used around "write the members, then record them in the catalog"."""
+    key = _key(zip_path)
+    with _deferred_lock:
+        if key in _deferred:
+            raise StoreError(f"{zip_path} is already being written")
+        _deferred[key] = False
+    try:
+        yield
+    except BaseException:
+        if _deferred[key]:          # only a guard this block left; an older one is not this block's to undo
+            rollback(zip_path)
+        raise
+    else:
+        if _deferred[key]:
+            commit(zip_path)
+    finally:
+        with _deferred_lock:
+            del _deferred[key]
+
+
+def commit(zip_path):
+    """The appended (or new) members count from now on: the guard and the saved tail are removed."""
+    _silent_remove(zip_path + ".guard")
+    _silent_remove(zip_path + ".tail")
 
 
 def _write_one(z, m):
@@ -211,6 +262,11 @@ def rollback(zip_path):
         return False
     with open(guard, encoding="utf-8") as f:
         state = json.load(f)
+    if state.get("new"):            # an archive that did not exist before the interrupted write
+        _silent_remove(zip_path)
+        _silent_remove(guard)
+        _silent_remove(tail)
+        return True
     with open(tail, "rb") as f:
         saved_tail = f.read()
     if len(saved_tail) != state["tail_size"]:
@@ -226,8 +282,10 @@ def rollback(zip_path):
     return True
 
 
-def recover(archives_dir):
-    """At startup: roll back interrupted appends and remove unfinished new archives. Returns what it touched."""
+def recover(archives_dir, recorded=None):
+    """At startup: roll back interrupted appends and remove unfinished new archives. Returns what it touched.
+    `recorded(zip_path, names)` tells whether the catalog already holds the members a guard names: then the
+    write was complete and only the guard is left to remove - rolling it back would lose recorded members."""
     touched = []
     if not os.path.isdir(archives_dir):
         return touched
@@ -235,8 +293,11 @@ def recover(archives_dir):
         for name in files:
             path = os.path.join(folder, name)
             if name.endswith(".guard"):
-                if rollback(path[: -len(".guard")]):
-                    touched.append(path[: -len(".guard")])
+                zip_path = path[: -len(".guard")]
+                if recorded is not None and _guard_is_recorded(path, zip_path, recorded):
+                    commit(zip_path)
+                elif rollback(zip_path):
+                    touched.append(zip_path)
             elif name.endswith(".partial") or name.endswith(".compacting"):
                 _silent_remove(path)
                 touched.append(path)
@@ -245,9 +306,35 @@ def recover(archives_dir):
     return touched
 
 
+def _guard_is_recorded(guard, zip_path, recorded):
+    try:
+        with open(guard, encoding="utf-8") as f:
+            names = json.load(f).get("names")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return bool(names) and os.path.exists(zip_path) and bool(recorded(zip_path, names))
+
+
 def _names(zip_path):
     with zipfile.ZipFile(zip_path) as z:
         return set(z.namelist())
+
+
+entry_names = _names
+
+
+def ends_cleanly(zip_path):
+    """Whether the file is a ZIP that ends exactly with its end record and no comment - nothing was added
+    after it (zipfile itself reads past such data without a word)."""
+    try:
+        with open(zip_path, "rb") as f:
+            f.seek(-22, os.SEEK_END)
+            end = f.read(22)
+        with zipfile.ZipFile(zip_path):
+            pass
+    except (OSError, zipfile.BadZipFile, ValueError):
+        return False
+    return end[:4] == b"PK\x05\x06" and end[20:22] == b"\x00\x00"
 
 
 def _write_durably(path, data):

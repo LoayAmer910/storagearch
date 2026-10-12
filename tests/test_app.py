@@ -5,6 +5,8 @@ import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # before Qt is loaded
 
+import pytest  # noqa: E402
+
 import app as app_module  # noqa: E402
 from core import api  # noqa: E402
 
@@ -78,3 +80,22 @@ def test_start_opens_the_window_on_a_fresh_installation_and_shuts_the_cloud_down
         for window in shown:
             window._closing_in_progress = True
             window.close()
+
+
+def test_a_second_start_on_a_data_folder_in_use_says_so_and_opens_no_window(tmp_path, monkeypatch, qtbot):
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from gui.main_window import MainWindow
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+
+    def in_use():
+        raise api.AlreadyRunningError("StorageArch is already running on the data folder")
+    monkeypatch.setattr(api, "initialize", in_use)
+    said = []
+    monkeypatch.setattr(QMessageBox, "information", lambda parent, title, text: said.append(text))
+    monkeypatch.setattr(QApplication, "exec", lambda self: pytest.fail("the window was opened"))
+    assert app_module.start() == 1
+    assert len(said) == 1 and "already open" in said[0]
+    assert not [w for w in QApplication.topLevelWidgets() if isinstance(w, MainWindow) and w.isVisible()]

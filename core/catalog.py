@@ -276,9 +276,11 @@ class Catalog:
     def new_uid():
         return uuid.uuid4().hex[:12]
 
-    def add_item(self, archive_id, item, members):
+    def add_item(self, archive_id, item, members, archive_size=None):
         """Writes one item and all its members in a single transaction and refreshes the archive digest.
-        `item` is a dict of item columns; `members` a list of member dicts. Returns the item id."""
+        `item` is a dict of item columns; `members` a list of member dicts. Returns the item id.
+        `archive_size`: the archive file's size after the write, recorded in the same transaction - so the
+        recorded size can never fall behind the recorded members, whatever happens right after."""
         with self.transaction() as db:
             cur = db.execute(
                 "INSERT INTO items (archive_id, file_type, file_name, original_path, path_in_archive, original_size, "
@@ -290,9 +292,10 @@ class Catalog:
             item_id = cur.lastrowid
             self._insert_members(db, item_id, archive_id, members)
             self._refresh_archive(db, archive_id)
+            self._set_size(db, archive_id, archive_size)
             return item_id
 
-    def replace_item_content(self, item_id, item, members, new_archive_id=None, kept=()):
+    def replace_item_content(self, item_id, item, members, new_archive_id=None, kept=(), archive_size=None):
         """Checkin of changed content: the old members become dead (their bytes stay in the ZIP until it is
         compacted), the new ones are added - in `new_archive_id` when the item moves to another archive (its
         old one is sealed or full) - and the item row is updated, all in one transaction. `kept` names
@@ -320,6 +323,7 @@ class Catalog:
                  item["original_hash"], item["archive_hash"], item.get("strategy"), item_id))
             self._insert_members(db, item_id, archive_id, members)
             self._refresh_archive(db, archive_id)
+            self._set_size(db, archive_id, archive_size)
             if old_archive_id != archive_id:
                 self._refresh_archive(db, old_archive_id)
 
@@ -330,6 +334,46 @@ class Catalog:
                 db.execute("UPDATE members SET stored_size = ?, crc32 = ? WHERE archive_id = ? AND path_in_archive = ? "
                            "AND live = 1", (f["stored_size"], f["crc32"], archive_id, path))
             self._refresh_archive(db, archive_id)
+
+    def record_compaction(self, archive_id, facts, archive_size):
+        """After the archive file was rewritten without its dead members: the live members' facts, the dead
+        members gone and the new file size - in one transaction, so no crash can leave them half applied."""
+        with self.transaction() as db:
+            for path, f in facts.items():
+                db.execute("UPDATE members SET stored_size = ?, crc32 = ? WHERE archive_id = ? AND path_in_archive = ? "
+                           "AND live = 1", (f["stored_size"], f["crc32"], archive_id, path))
+            db.execute("DELETE FROM members WHERE archive_id = ? AND live = 0", (archive_id,))
+            db.execute("UPDATE archives SET dead_bytes = 0 WHERE id = ?", (archive_id,))
+            self._refresh_archive(db, archive_id)
+            self._set_size(db, archive_id, archive_size)
+
+    def holds_members(self, zip_path, names):
+        """Whether every named ZIP entry is a recorded member (live or not) of the archive at zip_path."""
+        row = self._one("SELECT id FROM archives WHERE file_path = ?", (_norm(zip_path),))
+        if row is None:
+            return False
+        known = {r[0] for r in self._all("SELECT path_in_archive FROM members WHERE archive_id = ?", (row[0],))}
+        return set(names) <= known
+
+    def archives_without_content(self):
+        """(id, file path) of archive rows that hold no item and no member - what is left of a first write
+        that never completed."""
+        return self._all("SELECT id, file_path FROM archives WHERE NOT EXISTS (SELECT 1 FROM items WHERE "
+                         "items.archive_id = archives.id) AND NOT EXISTS (SELECT 1 FROM members WHERE "
+                         "members.archive_id = archives.id) ORDER BY id")
+
+    def delete_archive_without_content(self, archive_id):
+        """Removes an archive row only while it holds nothing. Returns whether it was removed."""
+        with self.transaction() as db:
+            cur = db.execute("DELETE FROM archives WHERE id = ? AND NOT EXISTS (SELECT 1 FROM items WHERE "
+                             "items.archive_id = archives.id) AND NOT EXISTS (SELECT 1 FROM members WHERE "
+                             "members.archive_id = archives.id)", (archive_id,))
+            return cur.rowcount == 1
+
+    @staticmethod
+    def _set_size(db, archive_id, archive_size):
+        if archive_size is not None:
+            db.execute("UPDATE archives SET current_size = ? WHERE id = ?", (archive_size, archive_id))
 
     def _insert_members(self, db, item_id, archive_id, members):
         for m in members:

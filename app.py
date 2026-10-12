@@ -33,12 +33,18 @@ def start():
     from core import api
 
     _install_crash_hook(api)
-    api.initialize()
-
-    from PySide6.QtWidgets import QApplication
-    from gui.main_window import MainWindow
+    from PySide6.QtWidgets import QApplication, QMessageBox
 
     app = QApplication.instance() or QApplication(sys.argv)
+    try:
+        api.initialize()
+    except api.AlreadyRunningError:
+        QMessageBox.information(None, "StorageArch", "StorageArch is already open and working on this data folder.\n"
+                                                     "Use the window that is already open.")
+        return 1
+
+    from gui.main_window import MainWindow
+
     window = MainWindow()
     window.show()
     try:
