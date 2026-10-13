@@ -134,6 +134,16 @@ The old data is only read, never modified.
 
 Security: see [SECURITY.md](SECURITY.md).
 
+## About the history
+
+The first commit is large because the project did not start here. An earlier version lived in a
+private repository; this one begins where its core was rewritten from scratch, so it arrived as
+working code with its tests. The run of commits on one day is a single round of fixes after an
+independent review, one stage per commit, each saying what it fixed.
+
+The rewrite was checked against the earlier version on the same real files: every file restored
+byte for byte in both, and the new core came out smaller on every folder (18 % overall).
+
 ## License
 
 [MIT](LICENSE)
